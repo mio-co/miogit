@@ -372,6 +372,53 @@ function siteBase(env: Env) {
   };
 }
 
+function parseStoreBytes(res: Response): { db: number; r2: number } | null {
+  try {
+    const v = JSON.parse(res.headers.get("x-store-bytes") ?? "");
+    if (typeof v?.db === "number" && typeof v?.r2 === "number") return v;
+  } catch {
+    // header absent
+  }
+  return null;
+}
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 ** 3) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 ** 3).toFixed(2)} GB`;
+}
+
+// Cloudflare free-plan storage allowances the usage bars measure against
+const FREE_DO_BYTES = 5 * 1024 ** 3;
+const FREE_R2_BYTES = 10 * 1024 ** 3;
+
+function statsPanel(repos: RepoInfo[]): string {
+  const db = repos.reduce((a, r) => a + (r.db_bytes || 0), 0);
+  const r2 = repos.reduce((a, r) => a + (r.r2_bytes || 0), 0);
+  const priv = repos.filter((r) => r.priv).length;
+  const bar = (used: number, cap: number) => {
+    const pct = Math.min(100, (used / cap) * 100);
+    return `<div class='st-bar' role='progressbar' aria-valuemin='0' aria-valuemax='100' aria-valuenow='${pct.toFixed(1)}'><i style='width:${Math.max(pct, used ? 0.6 : 0).toFixed(2)}%'></i></div>`;
+  };
+  const top = [...repos].sort((a, b) => (b.db_bytes + b.r2_bytes) - (a.db_bytes + a.r2_bytes)).slice(0, 5).filter((r) => r.db_bytes + r.r2_bytes > 0);
+  const max = top[0] ? top[0].db_bytes + top[0].r2_bytes : 1;
+  const topRows = top.map((r) => {
+    const n = r.db_bytes + r.r2_bytes;
+    return `<li><a href='/${repoUrl(r.name)}/'>${esc(r.name)}</a><span class='st-mini'><i style='width:${((n / max) * 100).toFixed(1)}%'></i></span><span class='st-num'>${fmtBytes(n)}</span></li>`;
+  }).join("");
+  return `<section class='mio-card st-panel' aria-label='storage'>` +
+    `<div class='st-head'><h2>${t("Storage", "存储空间")}</h2><span class='st-total'>${fmtBytes(db + r2)}</span></div>` +
+    `<div class='st-kpis'>` +
+    `<div><span class='st-k'>${t("Repositories", "仓库")}</span><span class='st-v'>${repos.length}</span></div>` +
+    `<div><span class='st-k'>${t("Private", "私有")}</span><span class='st-v'>${priv}</span></div>` +
+    `<div><span class='st-k'>${t("Public", "公开")}</span><span class='st-v'>${repos.length - priv}</span></div></div>` +
+    `<div class='st-quota'><div class='st-row'><span>Durable Objects</span><span class='st-num'>${fmtBytes(db)} / 5 GB</span></div>${bar(db, FREE_DO_BYTES)}</div>` +
+    `<div class='st-quota'><div class='st-row'><span>R2</span><span class='st-num'>${fmtBytes(r2)} / 10 GB</span></div>${bar(r2, FREE_R2_BYTES)}</div>` +
+    (topRows ? `<h3>${t("Largest repositories", "占用最多")}</h3><ul class='st-top'>${topRows}</ul>` : "") +
+    `</section>`;
+}
+
 async function indexPage(env: Env, signedIn = false): Promise<Response> {
   return htmlResponse(layout({ ...siteBase(env), body: await indexBody(env, signedIn) }));
 }
@@ -390,6 +437,7 @@ async function indexBody(env: Env, signedIn = false): Promise<string> {
       `<div class='rl-meta'>` +
       (r.lang ? `<span class='rl-lang' data-noi18n><i style='background:${langColor(r.lang)}'></i>${esc(r.lang)}</span>` : "") +
       `<span class='rl-owner'>${esc(r.owner || env.SITE_OWNER || "")}</span>` +
+      (signedIn && r.db_bytes + r.r2_bytes > 0 ? `<span class='rl-size' data-noi18n>${fmtBytes(r.db_bytes + r.r2_bytes)}</span>` : "") +
       `<time datetime='${iso}' title='${iso.slice(0, 16).replace("T", " ")} UTC'>${age(secs)}</time></div></li>`;
   }
   const sortBar = repos.length > 1
@@ -398,7 +446,7 @@ async function indexBody(env: Env, signedIn = false): Promise<string> {
       `<button type='button' data-sort='name' aria-pressed='false'>${t("Name", "名称")}</button></div>`
     : "";
   const body = repos.length
-    ? `<div class='rl-bar'><span class='rl-count'>${t(`${repos.length} repositories`, `${repos.length} 个仓库`)}</span>${sortBar}</div><ul class='repo-list' id='repo-list'>${rows}</ul>`
+    ? (signedIn ? statsPanel(repos) : "") + `<div class='rl-bar'><span class='rl-count'>${t(`${repos.length} repositories`, `${repos.length} 个仓库`)}</span>${sortBar}</div><ul class='repo-list' id='repo-list'>${rows}</ul>`
     : `<div class='mio-empty'>${t("No public repositories yet. Create one by pushing:", "还没有公开仓库，推送即可创建：")}<br/><code>git push https://&lt;this-host&gt;/myrepo.git main</code></div>`;
   return body;
 }
@@ -609,7 +657,7 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
           }
           const repos = await env.REGISTRY.getByName("registry").list(1000, ns, full);
           const res = json({
-            repos: repos.map((r) => ({ name: r.name, description: r.desc, owner: r.owner, section: r.section, idle: r.idle, private: !!r.priv })),
+            repos: repos.map((r) => ({ name: r.name, description: r.desc, owner: r.owner, section: r.section, idle: r.idle, private: !!r.priv, ...(full ? { bytes: (r.db_bytes || 0) + (r.r2_bytes || 0) } : {}) })),
           });
           res.headers.set("cache-control", "private, no-store");
           return res;
@@ -788,6 +836,8 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
         try {
           // a registry hiccup must not fail an already-applied push; next push heals
           await registry.upsert(repo, idle, res.headers.get("x-main-lang") ?? undefined);
+          const sb = parseStoreBytes(res);
+          if (sb) await registry.setBytes(repo, sb);
         } catch {
           // registry deferred
         }
@@ -821,6 +871,8 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
             idle,
             res.headers.get("x-main-lang") ?? undefined
           );
+          const sb = parseStoreBytes(res);
+          if (sb) await registry.setBytes(repo, sb);
         } catch {
           // non-JSON response; skip registry sync
         }

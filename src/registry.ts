@@ -13,6 +13,10 @@ export type RepoInfo = {
   ver: number;
   /** primary language of the default branch ("" = none) */
   lang: string;
+  /** bytes in the repo's Durable Object SQLite file */
+  db_bytes: number;
+  /** pack bytes kept in R2 */
+  r2_bytes: number;
 };
 
 export type RepoConfig = {
@@ -38,7 +42,7 @@ export class Registry extends DurableObject<Env> {
       );
     `);
     // upgrade path for databases created by earlier versions
-    for (const col of ["section TEXT NOT NULL DEFAULT ''", "priv INTEGER NOT NULL DEFAULT 0", "ver INTEGER NOT NULL DEFAULT 1", "lang TEXT NOT NULL DEFAULT ''"]) {
+    for (const col of ["section TEXT NOT NULL DEFAULT ''", "priv INTEGER NOT NULL DEFAULT 0", "ver INTEGER NOT NULL DEFAULT 1", "lang TEXT NOT NULL DEFAULT ''", "db_bytes INTEGER NOT NULL DEFAULT 0", "r2_bytes INTEGER NOT NULL DEFAULT 0"]) {
       try {
         ctx.storage.sql.exec(`ALTER TABLE repos ADD COLUMN ${col}`);
       } catch {
@@ -75,13 +79,17 @@ export class Registry extends DurableObject<Env> {
     );
   }
 
+  setBytes(name: string, b: { db: number; r2: number }): void {
+    this.ctx.storage.sql.exec("UPDATE repos SET db_bytes = ?, r2_bytes = ? WHERE name = ?", Math.max(0, b.db | 0), Math.max(0, b.r2 | 0), name);
+  }
+
   remove(name: string): void {
     this.ctx.storage.sql.exec("DELETE FROM repos WHERE name = ?", name);
   }
 
   get(name: string): RepoInfo | null {
     const rows = this.ctx.storage.sql
-      .exec<RepoInfo>("SELECT name, desc, owner, section, priv, idle, ver, lang FROM repos WHERE name = ?", name)
+      .exec<RepoInfo>("SELECT name, desc, owner, section, priv, idle, ver, lang, db_bytes, r2_bytes FROM repos WHERE name = ?", name)
       .toArray();
     return rows[0] ?? null;
   }
@@ -94,7 +102,7 @@ export class Registry extends DurableObject<Env> {
     if (ns) {
       return this.ctx.storage.sql
         .exec<RepoInfo>(
-          `SELECT name, desc, owner, section, priv, idle, ver, lang FROM repos WHERE ${pv}name >= ? AND name < ? ORDER BY idle DESC LIMIT ?`,
+          `SELECT name, desc, owner, section, priv, idle, ver, lang, db_bytes, r2_bytes FROM repos WHERE ${pv}name >= ? AND name < ? ORDER BY idle DESC LIMIT ?`,
           `${ns}/`,
           `${ns}0`,
           limit
@@ -103,7 +111,7 @@ export class Registry extends DurableObject<Env> {
     }
     return this.ctx.storage.sql
       .exec<RepoInfo>(
-        `SELECT name, desc, owner, section, priv, idle, ver, lang FROM repos ${includePrivate ? "" : "WHERE priv = 0 "}ORDER BY idle DESC LIMIT ?`,
+        `SELECT name, desc, owner, section, priv, idle, ver, lang, db_bytes, r2_bytes FROM repos ${includePrivate ? "" : "WHERE priv = 0 "}ORDER BY idle DESC LIMIT ?`,
         limit
       )
       .toArray();

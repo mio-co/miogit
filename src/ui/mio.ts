@@ -283,6 +283,27 @@ ul.repo-list li:hover{background:var(--cds-fill-ghost-hover)}
 .rl-lang{display:inline-flex;align-items:center;gap:6px;color:var(--cds-text-primary)}
 .rl-lang i{width:10px;height:10px;border-radius:50%;display:inline-block;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)}
 .rl-meta time{font-variant-numeric:tabular-nums}
+.rl-size{font-variant-numeric:tabular-nums}
+.st-panel{background:var(--cds-surface-2);border-radius:var(--cds-radius-card);box-shadow:var(--cds-panel-shadow);padding:16px 18px;margin:0 0 20px}
+.st-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0 0 12px}
+.st-panel h2{margin:0;font-size:15px;font-weight:600;color:var(--cds-text-primary)}
+.st-total{font-size:20px;font-weight:600;color:var(--cds-text-primary);font-variant-numeric:tabular-nums}
+.st-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 14px}
+.st-kpis div{background:var(--cds-fill-secondary);border-radius:10px;padding:8px 12px;display:flex;flex-direction:column;gap:2px}
+.st-k{font-size:12px;color:var(--cds-text-secondary)}
+.st-v{font-size:17px;font-weight:600;color:var(--cds-text-primary);font-variant-numeric:tabular-nums}
+.st-quota{margin:0 0 10px}
+.st-row{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;color:var(--cds-text-secondary);margin:0 0 5px}
+.st-num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.st-bar{height:6px;border-radius:999px;background:var(--cds-fill-secondary);overflow:hidden}
+.st-bar i,.st-mini i{display:block;height:100%;background:var(--cds-clay);border-radius:inherit}
+.st-panel h3{margin:14px 0 6px;font-size:12.5px;font-weight:600;color:var(--cds-text-secondary)}
+.st-top{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.st-top li{display:grid;grid-template-columns:minmax(0,9rem) 1fr auto;align-items:center;gap:10px;font-size:12.5px;color:var(--cds-text-secondary)}
+.st-top a{color:var(--cds-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st-top a:hover{color:var(--cds-accent-text)}
+.st-mini{height:4px;border-radius:999px;background:var(--cds-fill-secondary);overflow:hidden}
+@media (max-width:640px){.st-panel{padding:14px}.st-top li{grid-template-columns:minmax(0,7rem) 1fr auto}}
 @media (max-width:640px){
   ul.repo-list li{grid-template-columns:minmax(0,1fr);grid-template-areas:"name" "desc" "meta";padding:12px 14px}
   .rl-meta{gap:14px;margin-top:6px}

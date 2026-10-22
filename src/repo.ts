@@ -319,6 +319,18 @@ export class RepoCell extends DurableObject<Env> {
     return run.then(() => result);
   }
 
+  /** Stored bytes: the DO's SQLite file plus pack bytes kept in R2 (reads one row per pack). */
+  storageBytes(): { db: number; r2: number } {
+    let r2 = 0;
+    try {
+      const rows = this.ctx.storage.sql.exec<{ b: number }>("SELECT COALESCE(SUM(size),0) AS b FROM pack_meta WHERE store = 'r2'").toArray();
+      r2 = Number(rows[0]?.b ?? 0);
+    } catch {
+      // no packs yet
+    }
+    return { db: this.ctx.storage.sql.databaseSize, r2 };
+  }
+
   private async handleConfig(body: string): Promise<Response> {
     let cfg: Record<string, unknown>;
     try {
@@ -340,7 +352,7 @@ export class RepoCell extends DurableObject<Env> {
         section: this.store.getMeta("section") ?? "",
         private: this.store.getMeta("private") === "1",
       },
-      { headers: { "x-commit-time": String(await latestCommitTime(this.store)), "x-main-lang": await this.mainLang() } }
+      { headers: { "x-commit-time": String(await latestCommitTime(this.store)), "x-main-lang": await this.mainLang(), "x-store-bytes": JSON.stringify(this.storageBytes()) } }
     );
   }
 
@@ -687,6 +699,7 @@ export class RepoCell extends DurableObject<Env> {
       headers["x-changed"] = "1";
       headers["x-commit-time"] = String(commitTime);
       headers["x-main-lang"] = await this.mainLang().catch(() => "");
+      try { headers["x-store-bytes"] = JSON.stringify(this.storageBytes()); } catch { /* optional */ }
       // the applied ref updates, for the Worker's onPush hook. URI-encoded to
       // stay header-safe. The cap is on encoded bytes, not entries: ref names
       // are attacker-controlled up to 255 chars and non-ASCII encodes at 9
