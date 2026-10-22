@@ -2030,7 +2030,10 @@ function rawBlobResponse(data: Uint8Array, name: string): Response {
   const ext = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
   const types: Record<string, string> = {
     png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
-    svg: "text/plain; charset=utf-8", pdf: "application/pdf", html: "text/plain",
+    webp: "image/webp", avif: "image/avif", ico: "image/x-icon",
+    // SVG renders as an image (README logos); the sandbox CSP below keeps any
+    // script inside it from running when the file is opened directly
+    svg: "image/svg+xml", pdf: "application/pdf", html: "text/plain",
   };
   // hasOwn: ext is attacker-named, and a bare index would reach prototype
   // members for names like "constructor"
@@ -2040,6 +2043,7 @@ function rawBlobResponse(data: Uint8Array, name: string): Response {
       "content-type": ct,
       "x-content-type-options": "nosniff",
       "content-disposition": "inline",
+      ...(ext === "svg" ? { "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox" } : {}),
     },
   });
 }

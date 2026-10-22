@@ -2,6 +2,8 @@
 
 # MioHub
 
+中文 | [English](README.en.md)
+
 Mio 的私有 Git 托管，运行在 Cloudflare Workers 上，没有服务器、没有续费。
 
 线上地址：https://miohub.300031.xyz
