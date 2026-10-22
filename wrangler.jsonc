@@ -1,0 +1,34 @@
+{
+  // dgit: a cgit-style git host that runs entirely on Cloudflare.
+  // Each repository lives in its own SQLite-backed Durable Object ("cell").
+  // NOTE: the script name stays "git-cells" — Durable Object data is bound
+  // to it, and renaming would orphan every hosted repository.
+  "name": "git-cells",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "routes": [
+    { "pattern": "miohub.300031.xyz", "custom_domain": true }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "REPO", "class_name": "RepoCell" },
+      { "name": "REGISTRY", "class_name": "Registry" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["RepoCell", "Registry"] }
+  ],
+  // Optional: with PACK_CACHE bound, pushed pack bytes are stored in R2 (off the
+  // DO's SQLite) and full clones are served straight from R2 by the Worker.
+  // Remove this binding to fall back to the SQLite-only path (as on celld).
+  "r2_buckets": [
+    { "binding": "PACK_CACHE", "bucket_name": "dgit-pack-cache" }
+  ],
+  "vars": {
+    "SITE_NAME": "MioHub",
+    "CANONICAL_HOST": "miohub.300031.xyz",
+    "SITE_DESC": "",
+    "SITE_OWNER": "mio"
+  }
+  // Push auth: run `wrangler secret put GIT_TOKEN` (use .dev.vars locally).
+}
