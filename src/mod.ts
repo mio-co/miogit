@@ -393,7 +393,42 @@ function fmtBytes(n: number): string {
 const FREE_DO_BYTES = 5 * 1024 ** 3;
 const FREE_R2_BYTES = 10 * 1024 ** 3;
 
-function statsPanel(repos: RepoInfo[]): string {
+type DoUsage = { read: number; written: number; at: number };
+let usageMemo: DoUsage | null = null;
+const FREE_ROWS_READ = 5_000_000;
+const FREE_ROWS_WRITTEN = 100_000;
+
+/** Today's (UTC) Durable Object rows read/written from the GraphQL analytics API, memoized 5 min. */
+async function doUsage(env: Env): Promise<DoUsage | null> {
+  if (!env.CF_ANALYTICS_TOKEN || !env.CF_ACCOUNT_ID) return null;
+  if (usageMemo && Date.now() - usageMemo.at < 300_000) return usageMemo;
+  try {
+    const day = new Date().toISOString().slice(0, 10);
+    const res = await fetch("https://api.cloudflare.com/client/v4/graphql", {
+      method: "POST",
+      headers: { authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        query: "query($a:String!,$d:Date!){viewer{accounts(filter:{accountTag:$a}){durableObjectsPeriodicGroups(limit:10000,filter:{date:$d}){sum{rowsRead rowsWritten}}}}}",
+        variables: { a: env.CF_ACCOUNT_ID, d: day },
+      }),
+    });
+    const j = (await res.json()) as any;
+    const groups: any[] = j?.data?.viewer?.accounts?.[0]?.durableObjectsPeriodicGroups;
+    if (!Array.isArray(groups)) return usageMemo;
+    let read = 0, written = 0;
+    for (const g of groups) { read += g.sum?.rowsRead ?? 0; written += g.sum?.rowsWritten ?? 0; }
+    usageMemo = { read, written, at: Date.now() };
+    return usageMemo;
+  } catch {
+    return usageMemo;
+  }
+}
+
+function fmtRows(n: number): string {
+  return n >= 10_000 ? `${(n / 10_000).toFixed(n >= 1_000_000 ? 0 : 1)} 万` : String(n);
+}
+
+function statsPanel(repos: RepoInfo[], usage: DoUsage | null = null): string {
   const db = repos.reduce((a, r) => a + (r.db_bytes || 0), 0);
   const r2 = repos.reduce((a, r) => a + (r.r2_bytes || 0), 0);
   const priv = repos.filter((r) => r.priv).length;
@@ -408,13 +443,26 @@ function statsPanel(repos: RepoInfo[]): string {
     return `<li><a href='/${repoUrl(r.name)}/'>${esc(r.name)}</a><span class='st-mini'><i style='width:${((n / max) * 100).toFixed(1)}%'></i></span><span class='st-num'>${fmtBytes(n)}</span></li>`;
   }).join("");
   return `<section class='mio-card st-panel' aria-label='storage'>` +
-    `<div class='st-head'><h2>${t("Storage", "存储空间")}</h2><span class='st-total'>${fmtBytes(db + r2)}</span></div>` +
+    `<div class='st-head'><h2>${t("Storage", "存储空间")}<details class='st-help'><summary aria-label='${t("Notes", "注意事项")}'>?</summary><div class='st-pop' role='note'>` +
+    `<b>${t("Free plan limits", "免费版额度")}</b><ul>` +
+    `<li>${t("Durable Objects: 5M rows read and 100K rows written per day.", "Durable Objects 每天最多读 500 万行、写 10 万行。")}</li>` +
+    `<li>${t("Resets daily at 00:00 UTC (08:00 Beijing).", "每天 UTC 0 点（北京时间 8 点）重置。")}</li>` +
+    `<li>${t("Over the limit, pushes, pulls, clones and pages all fail until the reset. No data is lost.", "超额后推送、拉取、clone 和页面都会报错，直到重置，数据不会丢。")}</li>` +
+    `<li>${t("Writes count per git object, so first imports of large histories may need several days.", "写入按 git 对象计，大仓库首次导入完整历史可能要分几天推。")}</li>` +
+    `<li>${t("Each push is capped at 100 MB; push big repos branch by branch.", "单次推送上限 100 MB，大仓库按分支分批推。")}</li>` +
+    `<li>${t("Storage: 5 GB in Durable Objects, 10 GB in R2.", "存储：Durable Objects 5 GB，R2 10 GB。")}</li>` +
+    `</ul></div></details></h2><span class='st-total'>${fmtBytes(db + r2)}</span></div>` +
     `<div class='st-kpis'>` +
     `<div><span class='st-k'>${t("Repositories", "仓库")}</span><span class='st-v'>${repos.length}</span></div>` +
     `<div><span class='st-k'>${t("Private", "私有")}</span><span class='st-v'>${priv}</span></div>` +
     `<div><span class='st-k'>${t("Public", "公开")}</span><span class='st-v'>${repos.length - priv}</span></div></div>` +
     `<div class='st-quota'><div class='st-row'><span>Durable Objects</span><span class='st-num'>${fmtBytes(db)} / 5 GB</span></div>${bar(db, FREE_DO_BYTES)}</div>` +
     `<div class='st-quota'><div class='st-row'><span>R2</span><span class='st-num'>${fmtBytes(r2)} / 10 GB</span></div>${bar(r2, FREE_R2_BYTES)}</div>` +
+    (usage
+      ? `<h3>${t("Today's Durable Objects usage (UTC day)", "今日 Durable Objects 用量")}</h3>` +
+        `<div class='st-quota${usage.read >= FREE_ROWS_READ ? " st-over" : ""}'><div class='st-row'><span>${t("Rows read", "读取行数")}</span><span class='st-num'>${fmtRows(usage.read)} / 500 万</span></div>${bar(usage.read, FREE_ROWS_READ)}</div>` +
+        `<div class='st-quota${usage.written >= FREE_ROWS_WRITTEN ? " st-over" : ""}'><div class='st-row'><span>${t("Rows written", "写入行数")}</span><span class='st-num'>${fmtRows(usage.written)} / 10 万</span></div>${bar(usage.written, FREE_ROWS_WRITTEN)}</div>`
+      : "") +
     (topRows ? `<h3>${t("Largest repositories", "占用最多")}</h3><ul class='st-top'>${topRows}</ul>` : "") +
     `</section>`;
 }
@@ -446,7 +494,7 @@ async function indexBody(env: Env, signedIn = false): Promise<string> {
       `<button type='button' data-sort='name' aria-pressed='false'>${t("Name", "名称")}</button></div>`
     : "";
   const body = repos.length
-    ? (signedIn ? statsPanel(repos) : "") + `<div class='rl-bar'><span class='rl-count'>${t(`${repos.length} repositories`, `${repos.length} 个仓库`)}</span>${sortBar}</div><ul class='repo-list' id='repo-list'>${rows}</ul>`
+    ? (signedIn ? statsPanel(repos, await doUsage(env)) : "") + `<div class='rl-bar'><span class='rl-count'>${t(`${repos.length} repositories`, `${repos.length} 个仓库`)}</span>${sortBar}</div><ul class='repo-list' id='repo-list'>${rows}</ul>`
     : `<div class='mio-empty'>${t("No public repositories yet. Create one by pushing:", "还没有公开仓库，推送即可创建：")}<br/><code>git push https://&lt;this-host&gt;/myrepo.git main</code></div>`;
   return body;
 }

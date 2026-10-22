@@ -22,6 +22,10 @@ export interface Env {
   /** "1" screens every pushed object with SHA-1DC collision detection; default
    * hashes with native crypto.subtle (identical oid, far faster) */
   SHA1DC?: string;
+  /** optional read-only Cloudflare token (Account Analytics: Read) for today's DO usage */
+  CF_ANALYTICS_TOKEN?: string;
+  /** Cloudflare account id the analytics query targets */
+  CF_ACCOUNT_ID?: string;
   SITE_NAME?: string;
   SITE_DESC?: string;
   SITE_OWNER?: string;
