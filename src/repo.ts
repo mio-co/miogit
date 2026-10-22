@@ -979,6 +979,23 @@ export class RepoCell extends DurableObject<Env> {
     return null;
   }
 
+  private commitCounts = new Map<string, number>();
+  /** Commits reachable from tip, capped (a count above the cap reads as "cap+"). Cached per tip, which is immutable. */
+  private async countCommits(tip: string, cap = 1000): Promise<number> {
+    const hit = this.commitCounts.get(tip);
+    if (hit !== undefined) return hit;
+    const seen = new Set<string>([tip]);
+    const queue = [tip];
+    while (queue.length && seen.size <= cap) {
+      const c = await this.loadCommit(queue.shift()!);
+      for (const p of c?.parents ?? []) if (!seen.has(p)) { seen.add(p); queue.push(p); }
+    }
+    const n = Math.min(seen.size, cap + 1);
+    if (this.commitCounts.size > 256) this.commitCounts.clear();
+    this.commitCounts.set(tip, n);
+    return n;
+  }
+
   private async loadCommit(oid: string): Promise<Commit | null> {
     const obj = await this.store.get(oid);
     return obj?.type === "commit" ? parseCommit(obj.data) : null;
@@ -1405,6 +1422,8 @@ ${statRows || "<tr><td>(no changes)</td></tr>"}
       }
     }
     const branchCount = branches.length;
+    const commitCount = ghHead ? await this.countCommits(ghHead.oid) : 0;
+    const commitLabel = commitCount > 1000 ? "1000+" : String(commitCount);
     const langs = ghHead ? await this.languages(ghHead.commit.tree) : [];
     const langHtml = langs.length
       ? `<div class='gh-langs' data-noi18n><div class='gh-langs-h'>${t("Languages", "语言")}</div>` +
@@ -1421,7 +1440,7 @@ ${statRows || "<tr><td>(no changes)</td></tr>"}
   <div class='gh-meta'>
     <a href='${r}/refs/'><b>${branchCount}</b>${t(branchCount === 1 ? "branch" : "branches", "个分支")}</a>
     <a href='${r}/refs/'><b>${tags.length}</b>${t(tags.length === 1 ? "tag" : "tags", "个标签")}</a>
-    <a href='${r}/log/'>${t("History", "提交历史")}</a>
+    <a href='${r}/log/'><b>${commitLabel}</b>${t(commitCount === 1 ? "commit" : "commits", "次提交")}</a>
   </div>
   <div class='gh-clone'>${t("Clone", "克隆")}<input type='text' readonly value='${cloneUrl}' aria-label='clone url'/><button type='button' class='mio-btn' data-copy='${cloneUrl}'>${t("Copy", "复制")}</button></div>
 </div>
