@@ -600,10 +600,19 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
           withCors(Response.json(data, { status, headers: { "x-content-type-options": "nosniff" } }), options.cors);
         if (path === "/api/repos" && req.method === "GET") {
           const ns = url.searchParams.get("owner") ?? undefined;
-          const repos = await env.REGISTRY.getByName("registry").list(1000, ns);
-          return json({
-            repos: repos.map((r) => ({ name: r.name, description: r.desc, owner: r.owner, section: r.section, idle: r.idle })),
+          // private repos are listed for a signed-in browser or a valid push password
+          let full = signedIn;
+          if (!full && req.headers.has("authorization")) {
+            const d = await authorize({ repo: "", op: "write", private: true, credentials: parseBasic(req), request: req, env });
+            if (d instanceof Response) return withCors(d, options.cors);
+            full = d === true;
+          }
+          const repos = await env.REGISTRY.getByName("registry").list(1000, ns, full);
+          const res = json({
+            repos: repos.map((r) => ({ name: r.name, description: r.desc, owner: r.owner, section: r.section, idle: r.idle, private: !!r.priv })),
           });
+          res.headers.set("cache-control", "private, no-store");
+          return res;
         }
         return json({ error: "not found" }, 404);
       }
@@ -614,6 +623,11 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
 
       if (path === "/" || path === "") {
         if (signedIn) return indexPage(env, true);
+        if (ui && req.headers.has("authorization")) {
+          const d = await authorize({ repo: "", op: "write", private: true, credentials: parseBasic(req), request: req, env });
+          if (d instanceof Response) return d;
+          if (d === true) return indexPage(env, true);
+        }
         // the index is the front door under load: cache it briefly at the edge
         const cache = pageCache();
         if (cache) {
