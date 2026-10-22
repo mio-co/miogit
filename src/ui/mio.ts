@@ -29,8 +29,7 @@ p{text-wrap:pretty}
 .mio-wrap{width:100%;max-width:72rem;margin:0 auto;padding:0 24px}
 .mio-top .mio-wrap{height:100%;display:flex;align-items:center;gap:8px;min-width:0}
 .mio-brand{display:inline-flex;align-items:center;gap:8px;font-weight:600;font-size:.9375rem;white-space:nowrap}
-.mio-logo{width:22px;height:22px;border-radius:6px;background:var(--cds-accent);color:var(--cds-accent-foreground);
-  display:inline-grid;place-items:center;font-family:var(--font-anthropic-serif);font-size:14px;font-weight:600}
+.mio-logo{width:22px;height:22px;flex:none;color:var(--cds-text-primary);display:block}
 .mio-crumb{display:flex;align-items:center;gap:8px;min-width:0;color:var(--cds-text-secondary)}
 .mio-crumb .sep{color:var(--cds-text-muted)}
 .mio-crumb a{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--cds-text-primary);font-weight:500}

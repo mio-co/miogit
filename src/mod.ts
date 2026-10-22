@@ -29,7 +29,9 @@ export type { Person } from "./git/objects";
 const MAX_UPLOAD_PACK_BYTES = 16 * 1024 * 1024;
 
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const RESERVED = new Set(["api", "cgit.css", "app.js", "favicon.ico", "robots.txt", "info", "git-upload-pack", "git-receive-pack"]);
+/** MioHub mark: a monoline M with a clay full stop; the M follows the colour scheme. */
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><style>path{stroke:#1f1e1d}@media (prefers-color-scheme:dark){path{stroke:#f5f4ee}}</style><path d="M8 50V15l18 19 18-19v35" fill="none" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="56.5" cy="50" r="5" fill="#d97757"/></svg>`;
+const RESERVED = new Set(["api", "cgit.css", "app.js", "favicon.ico", "favicon.svg", "robots.txt", "info", "git-upload-pack", "git-receive-pack"]);
 const CACHE_TTL = 60;
 
 /** What a request is asking to do, from the repository's point of view. */
@@ -606,7 +608,7 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
         return json({ error: "not found" }, 404);
       }
 
-      if (!ui && (path === "/" || path === "" || path === "/cgit.css" || path === "/app.js" || path === "/robots.txt" || path === "/favicon.ico")) {
+      if (!ui && (path === "/" || path === "" || path === "/cgit.css" || path === "/app.js" || path === "/robots.txt" || path === "/favicon.ico" || path === "/favicon.svg")) {
         return new Response("not found\n", { status: 404 });
       }
 
@@ -638,8 +640,8 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
           { headers: { "content-type": "text/plain" } }
         );
       }
-      if (path === "/favicon.ico") {
-        return new Response("not found\n", { status: 404 });
+      if (path === "/favicon.ico" || path === "/favicon.svg") {
+        return new Response(FAVICON_SVG, { headers: { "content-type": "image/svg+xml", "cache-control": "public, max-age=86400" } });
       }
 
       const parsed = repoPath(repoRoute, namespaced, path);

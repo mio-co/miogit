@@ -135,12 +135,13 @@ export function layout(o: LayoutOpts): string {
 <meta name='viewport' content='width=device-width, initial-scale=1'/>
 <meta name='color-scheme' content='light dark'/>
 <script src='/app.js?v=${UI_VER}'></script>
+<link rel='icon' type='image/svg+xml' href='/favicon.svg'/>
 <link rel='stylesheet' type='text/css' href='/cgit.css?v=${UI_VER}'/>
 ${atom}
 </head>
 <body>
 <header class='mio-top'><div class='mio-wrap'>
-<a class='mio-brand' href='/'><span class='mio-logo' aria-hidden='true'>M</span><span class='site'>${esc(o.site)}</span></a>
+<a class='mio-brand' href='/'><svg class='mio-logo' viewBox='0 0 64 64' aria-hidden='true'><path d='M8 50V15l18 19 18-19v35' fill='none' stroke='currentColor' stroke-width='7.5' stroke-linecap='round' stroke-linejoin='round'/><circle cx='56.5' cy='50' r='5' fill='#d97757'/></svg><span class='site'>${esc(o.site)}</span></a>
 <nav class='mio-crumb' aria-label='breadcrumb'>${crumb}</nav>
 <div class='mio-actions'>
 <span id='mh-auth'></span>

@@ -1,3 +1,5 @@
+<img src="docs/logo.svg" width="64" alt="MioHub"/>
+
 # MioHub
 
 Private git hosting by Mio, built on Durable git (dgit).
