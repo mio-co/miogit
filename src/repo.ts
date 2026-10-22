@@ -1616,6 +1616,13 @@ ${rows}
       return htmlResponse(layout({ ...base, body }));
     }
     const name = path[path.length - 1] ?? "";
+    // Markdown reads like the README card (GitHub-style); plain keeps the source
+    if (/\.(md|markdown)$/i.test(name)) {
+      const body = `
+<div>blob: ${entry.oid} (<a href='${plainHref}'>plain</a>) (<a href='${r}/blame/${href}${q}'>blame</a>)</div>
+<div class='md'>${renderMarkdown(td.decode(obj.data), { repo, ref: h ?? base.ref })}</div>`;
+      return htmlResponse(layout({ ...base, body }));
+    }
     const lines = highlightLines(td.decode(obj.data), name);
     const nums = lines.map((_, i) => `<a id='n${i + 1}' href='#n${i + 1}'>${i + 1}</a>`).join("\n");
     const code = lines.map((l) => l || " ").join("\n");
