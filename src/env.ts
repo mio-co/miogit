@@ -42,6 +42,8 @@ export interface Env {
   ACCESS_AUD?: string;
   /** tests / self-hosted only: inline JWKS JSON used instead of fetching the team certs */
   ACCESS_JWKS?: string;
+  /** tests only (never set in production): enables a token lifetime of this many ms ("expires=test") so e2e can watch a token expire */
+  TEST_TOKEN_TTL_MS?: string;
   SITE_NAME?: string;
   SITE_DESC?: string;
   SITE_OWNER?: string;

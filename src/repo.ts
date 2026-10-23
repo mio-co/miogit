@@ -934,7 +934,8 @@ export class RepoCell extends DurableObject<Env> {
       ref: ref ?? headBranch,
       hasAbout: (await this.findReadme()) !== null,
       branches,
-      formAction: formAction ?? `/${repoUrl(repo)}/`,
+      // the summary page has no ?h=; switching a branch there opens that branch's files
+      formAction: formAction ?? `/${repoUrl(repo)}/tree/`,
     };
   }
 

@@ -71,9 +71,10 @@ export function newTokenId(): string {
 /**
  * Resolve a git credential (HTTP Basic password) to a principal, or null.
  * Env tokens are checked first (constant-time against each), then the token
- * table by SHA-256. Revoked tokens never resolve.
+ * table by SHA-256. Revoked tokens never resolve; an expired one resolves to
+ * "expired" so the caller can refuse it outright (public reads included).
  */
-export async function resolveToken(env: Env, pass: string): Promise<Principal | null> {
+export async function resolveToken(env: Env, pass: string): Promise<Principal | "expired" | null> {
   if (!pass) return null;
   const pd = await sha256(pass);
   const list = envTokens(env);
@@ -83,7 +84,9 @@ export async function resolveToken(env: Env, pass: string): Promise<Principal | 
   if (!pass.startsWith("mgt_")) return null; // table tokens always carry the prefix
   const hex = [...pd].map((b) => b.toString(16).padStart(2, "0")).join("");
   const row = await env.REGISTRY.getByName("registry").authToken(hex);
-  return row ? { role: row.role as Role, id: row.id, name: row.name } : null;
+  if (!row) return null;
+  if ("expired" in row) return "expired";
+  return { role: row.role as Role, id: row.id, name: row.name };
 }
 
 // ---- console password (PBKDF2-SHA256) -----------------------------------------

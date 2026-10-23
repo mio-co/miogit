@@ -1,4 +1,5 @@
 import { UI_VER } from "./mio";
+import { ICON_CARET_DOWN, ICON_CHECK, ICON_GIT_BRANCH } from "./icons";
 const ESCAPES: Record<string, string> = {
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "`": "&#96;",
 };
@@ -74,8 +75,10 @@ export interface LayoutOpts {
   hasAbout?: boolean;
   /** branch names for the switcher dropdown */
   branches?: string[];
-  /** form action for the branch switcher (current page path) */
+  /** target path of the branch switcher (current page path); each branch links to it with ?h= */
   formAction?: string;
+  /** non-repo pages: page heading (trusted HTML) instead of "Repositories", optional sub line and right-aligned actions */
+  heading?: { title: string; sub?: string; actions?: string };
   body: string;
 }
 
@@ -106,15 +109,21 @@ export function layout(o: LayoutOpts): string {
   const tabHtml = tabs
     .map(([id, href]) => `<a${id === o.tab ? " class='active' aria-current='page'" : ""} href='${href}'>${id}</a>`)
     .join("");
-  const switcher =
-    o.repo && o.branches && o.branches.length > 1
-      ? `<form method='get' action='${esc(o.formAction ?? `${r}/`)}'>` +
-        `<select name='h' aria-label='branch'>` +
-        o.branches
-          .map((b) => `<option value='${esc(b)}'${b === o.ref ? " selected='selected'" : ""}>${esc(b)}</option>`)
-          .join("") +
-        `</select> <input type='submit' value='switch'/></form>`
-      : "";
+  // GitHub-style branch picker: a button (GitBranch + name + caret) opening a
+  // menu of links (?h=<branch>); <details> needs no script, app.js only adds
+  // outside-click / Escape closing
+  const hasSwitcher = !!(o.repo && o.branches && o.branches.length > 1);
+  const target = esc(o.formAction ?? `${r}/`);
+  const switcher = hasSwitcher
+    ? `<details class='mio-menu mio-ref' data-menu>` +
+      `<summary class='mio-menu-btn' aria-label='Switch branch' data-zh-title='切换分支' title='Switch branch'>${ICON_GIT_BRANCH}<span class='mio-ref-name' data-noi18n>${esc(o.ref ?? "")}</span>${ICON_CARET_DOWN}</summary>` +
+      `<div class='mio-menu-pop' role='menu'>` +
+      `<div class='mio-menu-h'>${t("Switch branch", "切换分支")}</div>` +
+      o.branches!
+        .map((b) => `<a role='menuitemradio' aria-checked='${b === o.ref}' href='${target}?h=${encodeURIComponent(b)}' data-noi18n>${ICON_CHECK}<span>${esc(b)}</span></a>`)
+        .join("") +
+      `</div></details>`
+    : "";
   const atom = o.repo
     ? `<link rel='alternate' title='Atom feed' href='${r}/atom/${q}' type='application/atom+xml'/>`
     : "";
@@ -122,10 +131,13 @@ export function layout(o: LayoutOpts): string {
     ? `<span class='sep'>/</span><a href='${r}/'>${esc(o.repo)}</a>`
     : "";
   const head = o.tab === "login" ? "" : o.repo
-    ? `<div class='mio-head'><h1>${esc(o.repo)}</h1>${o.ref ? `<span class='mio-badge mono'>${esc(o.ref)}</span>` : ""}</div>` +
+    ? `<div class='mio-head'><h1>${esc(o.repo)}</h1>${o.ref && !hasSwitcher ? `<span class='mio-badge mono'>${esc(o.ref)}</span>` : ""}</div>` +
       `<p class='mio-sub'>${o.sub ? esc(o.sub) : t("No description", "暂无描述")}</p>`
-    : `<div class='mio-head'><h1>${t("Repositories", "仓库")}</h1></div>` +
-      (o.siteDesc || o.sub ? `<p class='mio-sub'>${esc(o.siteDesc || o.sub)}</p>` : `<div style='height:14px'></div>`);
+    : o.heading
+      ? `<div class='mio-head'><h1>${o.heading.title}</h1>${o.heading.actions ? `<div class='mio-head-act'>${o.heading.actions}</div>` : ""}</div>` +
+        (o.heading.sub ? `<p class='mio-sub'>${o.heading.sub}</p>` : `<div style='height:14px'></div>`)
+      : `<div class='mio-head'><h1>${t("Repositories", "仓库")}</h1></div>` +
+        (o.siteDesc || o.sub ? `<p class='mio-sub'>${esc(o.siteDesc || o.sub)}</p>` : `<div style='height:14px'></div>`);
   return `<!DOCTYPE html>
 <html lang='en' data-accent='clay'>
 <head>
@@ -151,8 +163,8 @@ ${atom}
 </div></header>
 <main id='cgit'>
 ${head}
-${tabHtml || switcher ? `<nav class='mio-tabs'>${tabHtml}${switcher}</nav>` : ""}
-${o.pathBar ? `<div class='path'>${o.pathBar}</div>` : ""}
+${tabHtml ? `<nav class='mio-tabs'>${tabHtml}</nav>` : ""}
+${switcher || o.pathBar ? `<div class='mio-refbar'>${switcher}${o.pathBar ? `<div class='path'>${o.pathBar}</div>` : ""}</div>` : ""}
 <div class='content'>
 ${o.body}
 </div>

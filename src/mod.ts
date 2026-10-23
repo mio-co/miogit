@@ -200,7 +200,11 @@ async function principalFor(req: Request, env: Env): Promise<Principal | null | 
   const creds = parseBasic(req);
   const p = creds ? await resolveToken(env, creds.pass) : null;
   // a Basic header that failed to decode counts as a failed attempt too
-  if (!p) recordAuthFailure(ip);
+  if (!p || p === "expired") recordAuthFailure(ip);
+  // an expired token is refused outright, even where anonymous access would pass
+  if (p === "expired") {
+    return new Response("token expired: create a new one in the console\n", { status: 401, headers: { "www-authenticate": 'Basic realm="MioGit"', "cache-control": "no-store" } });
+  }
   return p;
 }
 

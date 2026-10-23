@@ -27,10 +27,16 @@ export type TokenRow = {
   role: Role;
   created: number;
   last_used: number;
+  /** unix millis after which the token stops working; 0 = never expires (every token from before expiry existed) */
+  expires_at: number;
 };
+
+/** authToken result for a token that exists but is past its expires_at */
+export type ExpiredToken = { expired: true; id: string; name: string };
 
 /** last_used is refreshed at most this often per token (each refresh is a DO row write) */
 const TOKEN_TOUCH_MS = 10 * 60 * 1000;
+const TOKEN_COLS = "id, name, role, created, last_used, expires_at";
 
 /** console login: this many failures per IP per window, then locked until the window ends */
 const LOGIN_MAX_FAILS = 5;
@@ -80,6 +86,12 @@ export class Registry extends DurableObject<Env> {
         reset_at INTEGER NOT NULL
       );
     `);
+    // tokens from before expiry existed get 0 = never expires (no data rewrite)
+    try {
+      ctx.storage.sql.exec("ALTER TABLE tokens ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0");
+    } catch {
+      // column already exists
+    }
     // upgrade path for databases created by earlier versions
     for (const col of ["section TEXT NOT NULL DEFAULT ''", "priv INTEGER NOT NULL DEFAULT 0", "ver INTEGER NOT NULL DEFAULT 1", "lang TEXT NOT NULL DEFAULT ''", "db_bytes INTEGER NOT NULL DEFAULT 0", "r2_bytes INTEGER NOT NULL DEFAULT 0"]) {
       try {
@@ -160,14 +172,17 @@ export class Registry extends DurableObject<Env> {
 
   /**
    * Resolve a token by the SHA-256 (hex) of its secret. Revoked tokens never
-   * match, so revocation takes effect on the very next request. Refreshes
-   * last_used, throttled to one write per token per TOKEN_TOUCH_MS.
+   * match, so revocation takes effect on the very next request; a token past
+   * its expires_at comes back as { expired } (checked on every request, so it
+   * stops working the moment it expires). Refreshes last_used, throttled to
+   * one write per token per TOKEN_TOUCH_MS.
    */
-  authToken(hash: string, now = Date.now()): TokenRow | null {
+  authToken(hash: string, now = Date.now()): TokenRow | ExpiredToken | null {
     const row = this.ctx.storage.sql
-      .exec<TokenRow>("SELECT id, name, role, created, last_used FROM tokens WHERE hash = ? AND revoked = 0", hash)
+      .exec<TokenRow>(`SELECT ${TOKEN_COLS} FROM tokens WHERE hash = ? AND revoked = 0`, hash)
       .toArray()[0];
     if (!row || !isRole(row.role)) return null;
+    if (row.expires_at > 0 && now >= row.expires_at) return { expired: true, id: row.id, name: row.name };
     if (now - row.last_used > TOKEN_TOUCH_MS) {
       this.ctx.storage.sql.exec("UPDATE tokens SET last_used = ? WHERE id = ?", now, row.id);
       row.last_used = now;
@@ -178,28 +193,31 @@ export class Registry extends DurableObject<Env> {
   /** Active token by id (sessions re-check their token on every request). */
   tokenById(id: string): TokenRow | null {
     const row = this.ctx.storage.sql
-      .exec<TokenRow>("SELECT id, name, role, created, last_used FROM tokens WHERE id = ? AND revoked = 0", id)
+      .exec<TokenRow>(`SELECT ${TOKEN_COLS} FROM tokens WHERE id = ? AND revoked = 0`, id)
       .toArray()[0];
     return row && isRole(row.role) ? row : null;
   }
 
   listTokens(): TokenRow[] {
     return this.ctx.storage.sql
-      .exec<TokenRow>("SELECT id, name, role, created, last_used FROM tokens WHERE revoked = 0 ORDER BY created DESC LIMIT 500")
+      .exec<TokenRow>(`SELECT ${TOKEN_COLS} FROM tokens WHERE revoked = 0 ORDER BY created DESC LIMIT 500`)
       .toArray();
   }
 
-  createToken(id: string, hash: string, name: string, role: Role, now = Date.now()): TokenRow {
+  /** expiresAt: unix millis, 0 = never expires */
+  createToken(id: string, hash: string, name: string, role: Role, expiresAt = 0, now = Date.now()): TokenRow {
     if (!isRole(role)) throw new Error("bad role");
+    const exp = Number.isFinite(expiresAt) && expiresAt > 0 ? Math.floor(expiresAt) : 0;
     this.ctx.storage.sql.exec(
-      "INSERT INTO tokens (id, hash, name, role, created, last_used, revoked) VALUES (?, ?, ?, ?, ?, 0, 0)",
+      "INSERT INTO tokens (id, hash, name, role, created, last_used, revoked, expires_at) VALUES (?, ?, ?, ?, ?, 0, 0, ?)",
       id,
       hash,
       name,
       role,
-      now
+      now,
+      exp
     );
-    return { id, name, role, created: now, last_used: 0 };
+    return { id, name, role, created: now, last_used: 0, expires_at: exp };
   }
 
   /** Revoke (kept as a tombstone so the id is never reused); true if it was active. */

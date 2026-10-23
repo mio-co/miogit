@@ -62,10 +62,8 @@ p{text-wrap:pretty}
 .mio-tabs a:hover{color:var(--cds-text-primary);background:var(--cds-fill-ghost-hover)}
 .mio-tabs a.active{color:var(--cds-text-primary);font-weight:500}
 .mio-tabs a.active::after{content:'';position:absolute;left:10px;right:10px;bottom:0;height:2px;border-radius:2px;background:var(--cds-accent)}
-.mio-tabs form{margin-left:auto;display:flex;gap:6px;align-items:center;padding:4px 0}
 /* 管理台仓库页：标签栏最右「设置」（Phosphor GearSix），只在 /~mio/ 里由 HTMLRewriter 追加 */
 .mio-tabs a.mio-tab-set{margin-left:auto;display:inline-flex;align-items:center;gap:6px}
-.mio-tabs form ~ a.mio-tab-set{margin-left:0}
 .mio-tabs a.mio-tab-set svg{width:16px;height:16px;flex:none}
 .rl-priv-h{align-self:center}
 select,input[type=text],input[type=search],input:not([type]){font:inherit;font-size:max(13px,.8125rem);color:var(--cds-text-primary);
@@ -308,11 +306,9 @@ a.mio-btn-danger:hover,button.mio-btn-danger:hover{background:color-mix(in srgb,
 button.mio-btn-danger-solid{background:var(--cds-fill-danger-solid)!important;color:#fff!important}
 button.mio-btn-danger-solid:hover{filter:brightness(.95)}
 button.mio-btn-danger-solid:focus-visible{box-shadow:var(--cds-focus-shadow-danger)}
-.ad-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 16px}
-.ad-bar .ad-who{color:var(--cds-text-secondary);font-size:12.5px;margin-right:auto}
 .tk-sub{display:none}
 @media (max-width:640px){.mio-dialog{padding:20px}.mio-row{flex-direction:column;align-items:stretch}.mio-row > .mio-field.mio-narrow{flex:1}
-  table.tk{min-width:0}table.tk :is(th,td):is(.tk-c,.tk-used){display:none}
+  table.tk{min-width:0}table.tk :is(th,td):is(.tk-c,.tk-e,.tk-used){display:none}
   .tk-sub{display:block;margin-top:2px;font-weight:400;font-size:11.5px;color:var(--cds-text-secondary);font-family:var(--font-anthropic-mono);font-variant-numeric:tabular-nums}}
 @keyframes mio-dialog-in{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){.mio-backdrop,.mio-dialog{animation:none}}
@@ -429,6 +425,59 @@ ul.repo-list li:hover{background:var(--cds-fill-ghost-hover)}
   .gh-clone{width:100%}
   .gh-clone input{flex:1;width:auto;min-width:0}
 }
+
+/* ---------- 下拉菜单（MioUI DropdownMenu：12px 面板 + 4px 内边距 → 8px 菜单项，--cds-shadow-popover）；<details>，无内联脚本 ---------- */
+.mio-menu{position:relative;display:inline-flex;flex:none}
+.mio-menu > summary{list-style:none}
+.mio-menu > summary::-webkit-details-marker{display:none}
+.mio-menu-btn{display:inline-flex;align-items:center;gap:6px;height:var(--cds-h-control-sm);padding:0 8px 0 10px;border-radius:var(--cds-radius);
+  font-size:12.5px;line-height:1;color:var(--cds-text-primary);cursor:pointer;user-select:none;white-space:nowrap;-webkit-tap-highlight-color:transparent;
+  transition:background-color 150ms var(--cds-ease-swift),color var(--cds-dur-base) var(--cds-ease-swift),box-shadow var(--cds-dur-base) var(--cds-ease-swift)}
+.mio-menu-btn svg{width:16px;height:16px;flex:none;display:block}
+.mio-menu-btn > svg:last-child{width:12px;height:12px;color:var(--cds-text-secondary);transition:transform var(--cds-dur-snap) var(--cds-ease-snap)}
+.mio-menu[open] > .mio-menu-btn > svg:last-child{transform:rotate(180deg)}
+.mio-menu-btn:focus-visible{outline:none;box-shadow:var(--cds-focus-shadow)}
+.mio-acct-btn{color:var(--cds-text-secondary)}
+.mio-acct-btn:hover,.mio-acct[open] > .mio-acct-btn{background:var(--cds-fill-ghost-hover);color:var(--cds-text-primary)}
+.mio-ref > .mio-menu-btn{background:var(--cds-surface-3);box-shadow:inset 0 0 0 1px var(--cds-border);font-weight:500}
+.mio-ref > .mio-menu-btn:hover,.mio-ref[open] > .mio-menu-btn{box-shadow:inset 0 0 0 1px var(--cds-border-strong)}
+.mio-ref > .mio-menu-btn:focus-visible{box-shadow:var(--cds-focus-shadow)}
+.mio-ref > .mio-menu-btn > svg:first-child{color:var(--cds-text-secondary)}
+.mio-ref-name{max-width:16rem;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-anthropic-mono);font-size:12px}
+.mio-menu-pop{position:absolute;top:calc(100% + 6px);left:0;z-index:60;min-width:200px;max-width:min(320px,calc(100vw - 16px));max-height:min(70vh,28rem);overflow-y:auto;
+  padding:4px;border-radius:var(--cds-radius-card);background:var(--cds-surface-popover);box-shadow:var(--cds-shadow-popover);color:var(--cds-text-primary);
+  transform-origin:top left;animation:mio-menu-in var(--cds-dur-base) var(--cds-ease-enter) both}
+.mio-acct .mio-menu-pop{left:auto;right:0;transform-origin:top right}
+@keyframes mio-menu-in{from{opacity:0;transform:scale(.96) translateY(-4px)}to{opacity:1;transform:none}}
+.mio-menu-pop > a,.mio-menu-pop button{display:flex;align-items:center;gap:10px;width:100%;height:32px;padding:0 8px;border:0;border-radius:var(--cds-radius);background:transparent;
+  font:inherit;font-size:13.5px;line-height:1;color:var(--cds-text-primary);text-align:left;cursor:pointer;white-space:nowrap;text-decoration:none;transition:background-color var(--cds-dur-fast) linear}
+.mio-menu-pop > a > span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.mio-menu-pop :is(a,button) svg{width:16px;height:16px;flex:none;color:var(--cds-text-secondary)}
+.mio-menu-pop :is(a,button):hover{background:var(--cds-fill-ghost-hover)}
+.mio-menu-pop :is(a,button):focus-visible{outline:none;background:var(--cds-fill-ghost-hover);box-shadow:var(--cds-focus-shadow)}
+.mio-menu-pop :is(a,button):active{background:var(--cds-fill-ghost-selected)}
+.mio-menu-pop form{margin:0}
+.mio-menu-h{padding:6px 8px 4px;font-size:12px;line-height:16px;color:var(--cds-text-hint);white-space:nowrap}
+.mio-menu-h b{color:var(--cds-text-primary);font-weight:600}
+.mio-menu-sep{height:1px;margin:4px -4px;background:var(--cds-border)}
+.mio-ref .mio-menu-pop > a{font-family:var(--font-anthropic-mono);font-size:12.5px}
+.mio-ref .mio-menu-pop > a[aria-checked=false] svg{visibility:hidden}
+.mio-ref .mio-menu-pop > a[aria-checked=true] svg{color:var(--cds-accent-text)}
+@media (pointer:coarse){.mio-menu-pop :is(a,button){min-height:44px}}
+@media (max-width:420px){.mio-acct-btn{padding:0 6px}.mio-acct-l{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}}
+/* 分支行：标签栏下方、内容卡片上方（GitHub 文件区上方的分支按钮 + 路径） */
+.mio-refbar{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;margin:-4px 0 14px;min-width:0}
+.mio-refbar .path{margin:0;min-width:0;flex:1 1 12rem}
+/* 页头右侧操作（管理台列表页「访问令牌」） */
+.mio-head-act{margin-left:auto;align-self:center;display:flex;gap:8px}
+a.mio-btn.ad-tokens{gap:6px}
+a.mio-btn.ad-tokens svg{width:16px;height:16px;flex:none}
+#cgit .content > .ad-notice{margin:0 0 16px}
+/* 令牌到期 */
+.tk-exp.is-expired{display:inline-block;white-space:nowrap;font-family:var(--cds-font-body);font-size:11px;line-height:18px;padding:0 8px;border-radius:var(--cds-radius-pill);font-weight:500;
+  background:color-mix(in srgb,var(--cds-fill-danger) 12%,transparent);color:var(--cds-text-danger)}
+table.tk tr.is-expired td.tk-name > span:first-child{color:var(--cds-text-secondary)}
+.tk-reveal{box-shadow:0 0 0 1px color-mix(in srgb,var(--cds-accent) 45%,transparent),var(--cds-shadow-sm)}
 `;
 
 export const CSS = CDS_CSS + "\n" + APP_CSS;
@@ -501,6 +550,10 @@ function ready(){
         var a=f[0],z=f[f.length-1];if(e.shiftKey&&document.activeElement===a){e.preventDefault();z.focus()}else if(!e.shiftKey&&document.activeElement===z){e.preventDefault();a.focus()}
         else if(!dl.contains(document.activeElement)){e.preventDefault();a.focus()}}});
     var fi=dl.querySelector('[autofocus]')||dl.querySelector('input[type=password]');if(fi)fi.focus();}
+  var M=[].slice.call(document.querySelectorAll('details[data-menu]'));
+  if(M.length){M.forEach(function(m){m.addEventListener('toggle',function(){if(m.open)M.forEach(function(x){if(x!==m)x.open=false})})});
+    document.addEventListener('click',function(e){M.forEach(function(m){if(m.open&&!m.contains(e.target))m.open=false})});
+    document.addEventListener('keydown',function(e){if(e.key!=='Escape'||e.isComposing)return;M.forEach(function(m){if(m.open){m.open=false;m.querySelector('summary').focus()}})});}
   var L=document.getElementById('repo-list');
   if(L){var items=[].slice.call(L.children);
     function srt(k){items.sort(function(a,b){return k==='name'?a.getAttribute('data-name').localeCompare(b.getAttribute('data-name')):(+b.getAttribute('data-t'))-(+a.getAttribute('data-t'))});
@@ -514,4 +567,4 @@ setTimeout(function(){d.removeAttribute('data-i18n-pending')},1500);
 })();`;
 
 /** skin version: busts edge page cache and asset URLs. Bump the layout tag when only HTML changes. */
-export const UI_VER = (() => { let h = 5381; const s = CSS + APP_JS + "layout-v10"; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36); })();
+export const UI_VER = (() => { let h = 5381; const s = CSS + APP_JS + "layout-v11"; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36); })();

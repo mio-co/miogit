@@ -11,7 +11,7 @@
  */
 import type { Env } from "./env";
 import type { RepoInfo, TokenRow } from "./registry";
-import { esc, repoUrl, layout, htmlResponse, t } from "./ui/html";
+import { esc, repoUrl, layout, htmlResponse, t, type LayoutOpts } from "./ui/html";
 import {
   adminPasswordHash,
   adminUser,
@@ -34,7 +34,7 @@ import {
   verifyPassword,
 } from "./auth";
 import { isRole, type Role } from "./policy";
-import { ICON_GEAR_SIX, ICON_GLOBE, ICON_SLIDERS, ICON_WARNING } from "./ui/icons";
+import { ICON_BOOKS, ICON_CARET_DOWN, ICON_GEAR_SIX, ICON_GLOBE, ICON_KEY, ICON_LOCK_KEY, ICON_SIGN_OUT, ICON_SLIDERS, ICON_USER_CIRCLE, ICON_WARNING } from "./ui/icons";
 
 export const CONSOLE = "/~mio";
 
@@ -48,8 +48,6 @@ export interface ConsoleDeps {
 
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const LOCK = `<svg viewBox='0 0 256 256' aria-hidden='true'><rect x='40' y='88' width='176' height='128' rx='8' fill='none' stroke='currentColor' stroke-width='16'/><path d='M88 88V56a40 40 0 0 1 80 0v32' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
-const KEY = `<svg viewBox='0 0 256 256' aria-hidden='true'><circle cx='92' cy='164' r='44' fill='none' stroke='currentColor' stroke-width='16'/><path d='M123 133l85-85M176 80l24 24M152 104l20 20' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
-const WARN = `<svg viewBox='0 0 256 256' aria-hidden='true'><path d='M128 32 16 216h224Z' fill='none' stroke='currentColor' stroke-width='16' stroke-linejoin='round'/><path d='M128 104v48' stroke='currentColor' stroke-width='16' stroke-linecap='round'/><circle cx='128' cy='184' r='10' fill='currentColor'/></svg>`;
 
 const ROLE_LABEL: Record<Role, [string, string]> = {
   admin: ["Admin", "管理员"],
@@ -86,6 +84,41 @@ function fmtTime(ms: number): string {
   return new Date(ms).toISOString().slice(0, 16).replace("T", " ");
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** token lifetimes offered when creating one (GitHub fine-grained token style); default 30 days */
+const EXPIRY_CHOICES: [string, number, string, string][] = [
+  ["7", 7, "7 days", "7 天"],
+  ["30", 30, "30 days", "30 天"],
+  ["90", 90, "90 days", "90 天"],
+  ["365", 365, "1 year", "1 年"],
+  ["never", 0, "No expiration", "永不过期"],
+];
+const EXPIRY_DEFAULT = "30";
+
+/**
+ * Form value -> expires_at (unix ms, 0 = never). A missing field (an older
+ * client posting without it) means never, like every token from before expiry
+ * existed; "test" only exists when TEST_TOKEN_TTL_MS is set (e2e). undefined = invalid.
+ */
+export function expiryFromForm(v: string | null, env: Env, now = Date.now()): number | undefined {
+  if (v === null || v === "" || v === "never") return 0;
+  const testTtl = parseInt(env.TEST_TOKEN_TTL_MS ?? "", 10);
+  if (v === "test" && testTtl > 0) return now + testTtl;
+  const c = EXPIRY_CHOICES.find(([id]) => id === v);
+  return c && c[1] > 0 ? now + c[1] * DAY_MS : undefined;
+}
+
+function fmtDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/** expiry cell: date, "never", or a red "Expired" badge */
+function expiryHtml(r: TokenRow, now: number): string {
+  if (!r.expires_at) return t("Never", "永不过期");
+  if (now >= r.expires_at) return `<span class='tk-exp is-expired' title='${fmtTime(r.expires_at)} UTC'>${t("Expired", "已过期")}</span>`;
+  return `<span title='${fmtTime(r.expires_at)} UTC'>${fmtDay(r.expires_at)}</span>`;
+}
+
 interface DialogOpts {
   icon: string;
   title: string;
@@ -120,15 +153,37 @@ export function createConsole(deps: ConsoleDeps) {
     return noStore(htmlResponse(layout({ ...deps.siteBase(env), tab: "login-bg", body: behind, overlay }), status));
   }
 
-  async function home(env: Env, csrf: string, notice = ""): Promise<Response> {
-    const bar =
-      `<div class='ad-bar'><span class='ad-who'>${t("Signed in as", "已登录：")} <b>${esc(adminUser(env))}</b></span>` +
-      `<a class='mio-btn mio-btn-secondary' href='${CONSOLE}/tokens'>${t("Access tokens", "访问令牌")}</a>` +
-      `<a class='mio-btn mio-btn-ghost' href='${CONSOLE}/password'>${t("Change password", "修改密码")}</a>` +
-      `<form method='post' action='${CONSOLE}/logout' class='mio-auth'><input type='hidden' name='csrf' value='${esc(csrf)}'/><button type='submit' class='mio-btn mio-btn-ghost'>${t("Sign out", "退出")}</button></form></div>` +
-      (notice ? `<div class='mio-dialog-ok' role='status' style='margin:0 0 16px'>${notice}</div>` : "");
-    const body = bar + (await deps.indexBody(env, true, true));
-    return noStore(htmlResponse(layout({ ...deps.siteBase(env), title: `${deps.siteBase(env).site} · console`, body })));
+  async function home(env: Env, notice = ""): Promise<Response> {
+    const body = (notice ? `<div class='mio-dialog-ok ad-notice' role='status'>${notice}</div>` : "") + (await deps.indexBody(env, true, true));
+    const heading = {
+      title: t("Repositories", "仓库"),
+      sub: deps.siteBase(env).siteDesc ? esc(deps.siteBase(env).siteDesc) : undefined,
+      // the account pages, one click from the list (also in the top-bar account menu)
+      actions: `<a class='mio-btn mio-btn-secondary ad-tokens' href='${CONSOLE}/tokens'>${ICON_KEY}${t("Access tokens", "访问令牌")}</a>`,
+    };
+    return noStore(htmlResponse(layout({ ...deps.siteBase(env), title: `${deps.siteBase(env).site} · console`, heading, body })));
+  }
+
+  /**
+   * Top-bar account menu on every signed-in console page (GitHub's avatar menu,
+   * kept small): who is signed in, Repositories, Access tokens, Change password,
+   * Sign out. A <details> menu, no script needed; app.js adds outside-click / Escape.
+   */
+  function accountMenu(env: Env, csrf: string): string {
+    const user = esc(adminUser(env));
+    return (
+      `<details class='mio-menu mio-acct' data-menu>` +
+      `<summary class='mio-menu-btn mio-acct-btn' title='Account' data-zh-title='账户' aria-label='Account'>${ICON_USER_CIRCLE}<span class='mio-acct-l' data-noi18n>${user}</span>${ICON_CARET_DOWN}</summary>` +
+      `<div class='mio-menu-pop' role='menu'>` +
+      `<div class='mio-menu-h'>${t("Signed in as", "已登录：")} <b data-noi18n>${user}</b></div>` +
+      `<div class='mio-menu-sep' role='separator'></div>` +
+      `<a role='menuitem' href='${CONSOLE}/'>${ICON_BOOKS}${t("Repositories", "仓库")}</a>` +
+      `<a role='menuitem' href='${CONSOLE}/tokens'>${ICON_KEY}${t("Access tokens", "访问令牌")}</a>` +
+      `<a role='menuitem' href='${CONSOLE}/password'>${ICON_LOCK_KEY}${t("Change password", "修改密码")}</a>` +
+      `<div class='mio-menu-sep' role='separator'></div>` +
+      `<form method='post' action='${CONSOLE}/logout'><input type='hidden' name='csrf' value='${esc(csrf)}'/><button type='submit' role='menuitem'>${ICON_SIGN_OUT}${t("Sign out", "退出")}</button></form>` +
+      `</div></details>`
+    );
   }
 
   async function loginPage(env: Env, next: string, error = "", user = ""): Promise<Response> {
@@ -156,107 +211,106 @@ export function createConsole(deps: ConsoleDeps) {
     );
   }
 
-  async function tokensPage(env: Env, csrf: string, opts: { error?: string; created?: { row: TokenRow; secret: string } } = {}): Promise<Response> {
+  type AccountSection = "tokens" | "password";
+
+  /**
+   * Account settings as a standalone page, laid out like the repository
+   * settings page (section nav on the left, panels on the right): Access
+   * tokens and Password. No dialog, no script.
+   */
+  function accountPage(env: Env, section: AccountSection, panels: string, status = 200, title = ""): Response {
+    const nav: [AccountSection, string, string, string][] = [
+      ["tokens", `${CONSOLE}/tokens`, ICON_KEY, t("Access tokens", "访问令牌")],
+      ["password", `${CONSOLE}/password`, ICON_LOCK_KEY, t("Password", "密码")],
+    ];
+    const navHtml =
+      `<nav class='rs-nav' aria-label='Account settings'><ul>` +
+      nav.map(([id, href, icon, label]) => `<li><a href='${href}'${id === section ? " aria-current='page'" : ""}>${icon}${label}</a></li>`).join("") +
+      `</ul></nav>`;
+    const heading: LayoutOpts["heading"] = {
+      title: t("Account settings", "账户设置"),
+      sub: `${t("Signed in as", "已登录：")} <b data-noi18n>${esc(adminUser(env))}</b>`,
+    };
+    const body = `<section class='rs-page'>${navHtml}<div class='rs-main'>${panels}</div></section>`;
+    return noStore(htmlResponse(layout({ ...deps.siteBase(env), title: `${deps.siteBase(env).site} · ${title || section}`, heading, body }), status));
+  }
+
+  async function tokensPage(env: Env, csrf: string, opts: { error?: string; created?: { row: TokenRow; secret: string }; revoke?: TokenRow } = {}): Promise<Response> {
     const registry = env.REGISTRY.getByName("registry");
+    const now = Date.now();
+    const csrfIn = `<input type='hidden' name='csrf' value='${esc(csrf)}'/>`;
+    if (opts.revoke) {
+      const row = opts.revoke;
+      const panel = `<form class='rs-panel rs-danger' method='post' action='${CONSOLE}/tokens/${encodeURIComponent(row.id)}/revoke'>${csrfIn}
+  <div class='rs-panel-h'><h2>${t(`Revoke “${row.name}”?`, `吊销「${row.name}」？`)}</h2><p class='mio-note'>${t("Every git request with this token fails from now on. This cannot be undone; create a new token instead.", "之后所有使用这个令牌的 git 请求都会失败。不能撤销，需要时请新建令牌。")}</p></div>
+  <div class='rs-actions'>
+    <a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/tokens'>${t("Cancel", "取消")}</a>
+    <button type='submit' class='mio-btn mio-btn-danger-solid mio-btn-md'>${t("Revoke", "吊销")}</button>
+  </div>
+</form>`;
+      return accountPage(env, "tokens", panel, 200, "revoke token");
+    }
+    let reveal = "";
     if (opts.created) {
       const { row, secret } = opts.created;
-      const body = `
-  <div class='mio-dialog-ok' role='status'>${t(`Token “${row.name}” (${ROLE_LABEL[row.role][0]}) created.`, `已创建令牌「${row.name}」（${ROLE_LABEL[row.role][1]}）。`)}</div>
-  <label class='mio-field'><span>${t("Token — copy it now, it will not be shown again", "令牌明文：现在复制，关闭后不会再显示")}</span>
+      const exp = row.expires_at ? t(`Expires ${fmtDay(row.expires_at)}.`, `到期：${fmtDay(row.expires_at)}。`) : t("Never expires.", "永不过期。");
+      reveal = `<section class='rs-panel tk-reveal'>
+  <div class='rs-panel-h'><h2>${t("Copy your new token", "复制新令牌")}</h2><p class='mio-note'>${t(`Token “${row.name}” (${ROLE_LABEL[row.role][0]}) created.`, `已创建令牌「${row.name}」（${ROLE_LABEL[row.role][1]}）。`)} ${exp}</p></div>
+  <label class='mio-field'><span>${t("Token — copy it now, it will not be shown again", "令牌明文：现在复制，离开本页后不会再显示")}</span>
     <span class='tk-secret'><input type='text' readonly value='${esc(secret)}' aria-label='token' autocomplete='off' spellcheck='false' data-noi18n/><button type='button' class='mio-btn mio-btn-secondary mio-btn-md' data-copy='${esc(secret)}'>${t("Copy", "复制")}</button></span></label>
-  <p class='mio-note' style='margin:0'>${t("Use it as the HTTP password for git (any username), e.g. git clone https://<user>:<token>@host/repo.git. Only its SHA-256 hash is stored.", "在 git 里作为 HTTP 密码使用（用户名随意）。服务器只保存它的 SHA-256 哈希。")}</p>
-  <div class='mio-dialog-actions'><a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/tokens'>${t("Done", "完成")}</a></div>`;
-      return page(env, dialog({ icon: KEY, title: t("Copy your new token", "复制新令牌"), body, cancel: `${CONSOLE}/tokens`, wide: true }));
+  <p class='mio-note rs-note'>${t("Use it as the HTTP password for git (any username), e.g. git clone https://<user>:<token>@host/repo.git. Only its SHA-256 hash is stored.", "在 git 里作为 HTTP 密码使用（用户名随意）。服务器只保存它的 SHA-256 哈希。")}</p>
+</section>`;
     }
     const rows = await registry.listTokens();
     const table = rows.length
-      ? `<div class='tk-wrap'><table class='tk'><thead><tr><th>${t("Name", "名称")}</th><th>${t("Role", "角色")}</th><th class='tk-c'>${t("Created", "创建时间")}</th><th class='tk-used'>${t("Last used", "最近使用")}</th><th><span class='sr-only'>${t("Actions", "操作")}</span></th></tr></thead><tbody>` +
+      ? `<div class='tk-wrap'><table class='tk'><thead><tr><th>${t("Name", "名称")}</th><th>${t("Role", "角色")}</th><th class='tk-c'>${t("Created", "创建时间")}</th><th class='tk-e'>${t("Expires", "到期")}</th><th class='tk-used'>${t("Last used", "最近使用")}</th><th><span class='sr-only'>${t("Actions", "操作")}</span></th></tr></thead><tbody>` +
         rows
-          .map(
-            (r) =>
-              `<tr><td class='tk-name'><span data-noi18n>${esc(r.name)}</span><span class='tk-sub'>${t("Created", "创建")} ${fmtTime(r.created)} · ${t("Last used", "最近使用")} ${r.last_used ? fmtTime(r.last_used) : t("never", "从未")}</span></td><td><span class='tk-role' data-role='${r.role}'>${t(ROLE_LABEL[r.role][0], ROLE_LABEL[r.role][1])}</span></td>` +
-              `<td class='tk-t tk-c'>${fmtTime(r.created)}</td><td class='tk-t tk-used'>${r.last_used ? fmtTime(r.last_used) : t("Never", "从未")}</td>` +
-              `<td class='tk-act'><a class='mio-btn mio-btn-danger' href='${CONSOLE}/tokens/${encodeURIComponent(r.id)}/revoke'>${t("Revoke", "吊销")}</a></td></tr>`
-          )
+          .map((r) => {
+            const expired = r.expires_at > 0 && now >= r.expires_at;
+            return (
+              `<tr${expired ? " class='is-expired'" : ""}><td class='tk-name'><span data-noi18n>${esc(r.name)}</span><span class='tk-sub'>${t("Created", "创建")} ${fmtTime(r.created)} · ${t("Expires", "到期")} ${expiryHtml(r, now)} · ${t("Last used", "最近使用")} ${r.last_used ? fmtTime(r.last_used) : t("never", "从未")}</span></td><td><span class='tk-role' data-role='${r.role}'>${t(ROLE_LABEL[r.role][0], ROLE_LABEL[r.role][1])}</span></td>` +
+              `<td class='tk-t tk-c'>${fmtTime(r.created)}</td><td class='tk-t tk-e'>${expiryHtml(r, now)}</td><td class='tk-t tk-used'>${r.last_used ? fmtTime(r.last_used) : t("Never", "从未")}</td>` +
+              `<td class='tk-act'><a class='mio-btn mio-btn-danger' href='${CONSOLE}/tokens/${encodeURIComponent(r.id)}/revoke'>${expired ? t("Delete", "删除") : t("Revoke", "吊销")}</a></td></tr>`
+            );
+          })
           .join("") +
         `</tbody></table></div>`
       : `<div class='tk-empty'>${t("No tokens yet. The original push password keeps working as an admin token.", "还没有令牌。原来的推送密码继续作为管理员令牌有效。")}</div>`;
-    const body = `
-  ${opts.error ? `<div class='mio-dialog-err' role='alert'>${opts.error}</div>` : ""}
+    const list = `<section class='rs-panel'>
+  <div class='rs-panel-h'><h2>${t("Access tokens", "访问令牌")}</h2><p class='mio-note'>${t("One token per assistant. Revoking takes effect immediately; an expired token stops working at once.", "每个助手一个令牌。吊销立即生效，过期的令牌也会立刻失效。")}</p></div>
   ${table}
-  <form class='mio-sec' method='post' action='${CONSOLE}/tokens'>
-    <h3>${t("New token", "新建令牌")}</h3>
-    <input type='hidden' name='csrf' value='${esc(csrf)}'/>
-    <div class='mio-row'>
-      <label class='mio-field'><span>${t("Name", "名称")}</span><input type='text' name='name' maxlength='64' required placeholder='hark6' autocomplete='off' spellcheck='false'/></label>
-      <label class='mio-field mio-narrow'><span>${t("Role", "角色")}</span><select name='role'>
-        <option value='writer'>${ROLE_LABEL.writer[1]} writer</option><option value='reader'>${ROLE_LABEL.reader[1]} reader</option><option value='admin'>${ROLE_LABEL.admin[1]} admin</option></select></label>
-    </div>
-    <p class='mio-note' style='margin:0'>${t("Writer: read everything, push branches other than main; no tags, no new repositories. Reader: read only.", "写入：可读全部仓库，可推送 main 以外的分支，不能推标签、不能建仓库。只读：只能拉取。")}</p>
-    <div class='mio-dialog-actions'>
-      <a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/' data-dialog-cancel>${t("Close", "关闭")}</a>
-      <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Create token", "创建令牌")}</button>
-    </div>
-  </form>`;
-    return page(
-      env,
-      dialog({
-        icon: KEY,
-        title: t("Access tokens", "访问令牌"),
-        desc: t("One token per assistant. Revoking takes effect immediately.", "每个助手一个令牌，吊销立即生效。"),
-        body,
-        cancel: `${CONSOLE}/`,
-        wide: true,
-      }),
-      opts.error ? 400 : 200
-    );
-  }
-
-  async function revokePage(env: Env, csrf: string, row: TokenRow): Promise<Response> {
-    const body = `
-  <input type='hidden' name='csrf' value='${esc(csrf)}'/>
-  <div class='mio-dialog-actions'>
-    <a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/tokens' data-dialog-cancel>${t("Cancel", "取消")}</a>
-    <button type='submit' class='mio-btn mio-btn-danger-solid mio-btn-md'>${t("Revoke", "吊销")}</button>
-  </div>`;
-    return page(
-      env,
-      dialog({
-        icon: WARN,
-        danger: true,
-        title: t(`Revoke “${row.name}”?`, `吊销「${row.name}」？`),
-        desc: t("Every git request with this token fails from now on. This cannot be undone; create a new token instead.", "之后所有使用这个令牌的 git 请求都会失败。不能撤销，需要时请新建令牌。"),
-        body,
-        cancel: `${CONSOLE}/tokens`,
-        formAction: `${CONSOLE}/tokens/${encodeURIComponent(row.id)}/revoke`,
-      })
-    );
+</section>`;
+    const testTtl = parseInt(env.TEST_TOKEN_TTL_MS ?? "", 10) > 0;
+    const expiryOpts =
+      EXPIRY_CHOICES.map(([id, , en, zh]) => `<option value='${id}'${id === EXPIRY_DEFAULT ? " selected" : ""} data-zh='${esc(zh)}'>${esc(en)}</option>`).join("") +
+      (testTtl ? `<option value='test'>test</option>` : "");
+    const form = `<form class='rs-panel' id='new-token' method='post' action='${CONSOLE}/tokens'>${csrfIn}
+  <div class='rs-panel-h'><h2>${t("New token", "新建令牌")}</h2><p class='mio-note'>${t("The token is shown once, right after it is created.", "令牌明文只在创建后显示一次。")}</p></div>
+  ${opts.error ? `<div class='mio-dialog-err' role='alert'>${opts.error}</div>` : ""}
+  <label class='mio-field'><span>${t("Name", "名称")}</span><input type='text' name='name' maxlength='64' required placeholder='hark6' autocomplete='off' spellcheck='false'/></label>
+  <div class='mio-row'>
+    <label class='mio-field'><span>${t("Role", "角色")}</span><select name='role'>
+      <option value='writer'>${ROLE_LABEL.writer[1]} writer</option><option value='reader'>${ROLE_LABEL.reader[1]} reader</option><option value='admin'>${ROLE_LABEL.admin[1]} admin</option></select></label>
+    <label class='mio-field'><span>${t("Expiration", "过期时间")}</span><select name='expires'>${expiryOpts}</select></label>
+  </div>
+  <p class='mio-note rs-note'>${t("Writer: read everything, push branches other than main; no tags, no new repositories. Reader: read only.", "写入：可读全部仓库，可推送 main 以外的分支，不能推标签、不能建仓库。只读：只能拉取。")}</p>
+  <div class='rs-actions'><button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Create token", "创建令牌")}</button></div>
+</form>`;
+    return accountPage(env, "tokens", reveal + list + form, opts.error ? 400 : 200, "tokens");
   }
 
   async function passwordPage(env: Env, csrf: string, error = ""): Promise<Response> {
-    const body = `
+    const panel = `<form class='rs-panel' method='post' action='${CONSOLE}/password'>
+  <div class='rs-panel-h'><h2>${t("Change console password", "修改管理台密码")}</h2><p class='mio-note'>${t("Other signed-in browsers are signed out.", "修改后，其他已登录的浏览器会退出登录。")}</p></div>
   ${error ? `<div class='mio-dialog-err' role='alert'>${error}</div>` : ""}
   <input type='hidden' name='csrf' value='${esc(csrf)}'/>
   <input type='text' name='username' value='${esc(adminUser(env))}' autocomplete='username' hidden readonly tabindex='-1' aria-hidden='true'/>
-  <label class='mio-field'><span>${t("Current password", "当前密码")}</span><input type='password' name='current' autocomplete='current-password' required autofocus/></label>
+  <label class='mio-field'><span>${t("Current password", "当前密码")}</span><input type='password' name='current' autocomplete='current-password' required/></label>
   <label class='mio-field'><span>${t("New password (at least 12 characters)", "新密码（至少 12 位）")}</span><input type='password' name='next' autocomplete='new-password' minlength='12' required/></label>
   <label class='mio-field'><span>${t("Repeat new password", "再次输入新密码")}</span><input type='password' name='confirm' autocomplete='new-password' minlength='12' required/></label>
-  <div class='mio-dialog-actions'>
-    <a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/' data-dialog-cancel>${t("Cancel", "取消")}</a>
-    <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Change password", "修改密码")}</button>
-  </div>`;
-    return page(
-      env,
-      dialog({
-        icon: LOCK,
-        title: t("Change console password", "修改管理台密码"),
-        desc: t("Other signed-in browsers are signed out.", "修改后，其他已登录的浏览器会退出登录。"),
-        body,
-        cancel: `${CONSOLE}/`,
-        formAction: `${CONSOLE}/password`,
-      }),
-      error ? 400 : 200
-    );
+  <div class='rs-actions'><button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Change password", "修改密码")}</button></div>
+</form>`;
+    return accountPage(env, "password", panel, error ? 400 : 200, "password");
   }
 
   type SettingsSection = "general" | "visibility" | "danger";
@@ -435,9 +489,18 @@ export function createConsole(deps: ConsoleDeps) {
 
   /** Entry point for every path under /~mio (and /~mio itself). */
   async function handle(req: Request, env: Env): Promise<Response> {
-    const res = await route(req, env);
+    let res = await route(req, env);
     if ((res.headers.get("set-cookie") ?? "").includes("mg_signed=")) return res;
-    const valid = !!(await validSession(req, env, await adminPasswordHash(env)));
+    const passHash = await adminPasswordHash(env);
+    const session = await validSession(req, env, passHash);
+    const valid = !!session;
+    // signed-in console pages get the account menu in the top bar's account slot
+    if (session && passHash && typeof HTMLRewriter !== "undefined" && (res.headers.get("content-type") ?? "").startsWith("text/html")) {
+      // (route() answers every request that fails the Access check with plain text, so HTML here passed it)
+      const menu = accountMenu(env, await csrfToken(env, passHash, session));
+      const out = new HTMLRewriter().on("#mh-auth", { element(e) { e.replace(menu, { html: true }); } }).transform(res);
+      res = new Response(out.body, out);
+    }
     // a session from before the hint existed gets the hint on its next console visit;
     // a stale hint (session expired or signed out elsewhere) is dropped
     if (valid === hasHint(req)) return res;
@@ -510,7 +573,6 @@ export function createConsole(deps: ConsoleDeps) {
       const dn = url.searchParams.get("name") ?? "";
       return home(
         env,
-        csrf,
         n === "password"
           ? t("Password changed.", "密码已修改。")
           : n === "settings"
@@ -528,14 +590,16 @@ export function createConsole(deps: ConsoleDeps) {
       const role = String(form!.get("role") ?? "");
       if (!name || name.length > 64 || /[\x00-\x1f\x7f]/.test(name)) return tokensPage(env, csrf, { error: t("Name must be 1–64 characters.", "名称需为 1–64 个字符。") });
       if (!isRole(role)) return tokensPage(env, csrf, { error: t("Unknown role.", "未知角色。") });
+      const expiresAt = expiryFromForm(form!.has("expires") ? String(form!.get("expires")) : null, env);
+      if (expiresAt === undefined) return tokensPage(env, csrf, { error: t("Unknown expiration.", "未知的过期时间。") });
       const secret = newTokenSecret();
-      const row = await registry.createToken(newTokenId(), await sha256Hex(secret), name, role);
+      const row = await registry.createToken(newTokenId(), await sha256Hex(secret), name, role, expiresAt);
       return tokensPage(env, csrf, { created: { row, secret } });
     }
     const rv = /^\/tokens\/([A-Za-z0-9_-]{1,40})\/revoke$/.exec(sub);
     if (rv) {
       const row = await registry.tokenById(rv[1]);
-      if (req.method === "GET") return row ? revokePage(env, csrf, row) : redirect(`${CONSOLE}/tokens`);
+      if (req.method === "GET") return row ? tokensPage(env, csrf, { revoke: row }) : redirect(`${CONSOLE}/tokens`);
       if (row) await registry.revokeToken(row.id);
       return redirect(`${CONSOLE}/tokens`);
     }

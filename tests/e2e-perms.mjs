@@ -54,6 +54,7 @@ const vars = {
   ACCESS_TEAM_DOMAIN: TEAM,
   ACCESS_AUD: AUD,
   ACCESS_JWKS: JSON.stringify({ keys: [jwk] }),
+  TEST_TOKEN_TTL_MS: "4000", // enables expires=test (4 s) so a token can be watched expiring
 };
 const args = ["wrangler", "dev", "-c", "wrangler.test.jsonc", "--local", "--port", String(PORT), "--ip", "127.0.0.1", "--persist-to", join(tmp, "state"), "--show-interactive-dev-session=false"];
 for (const [k, v] of Object.entries(vars)) args.push("--var", `${k}:${v}`);
@@ -217,6 +218,7 @@ try {
   check(pv.status === 200 && pvh.includes("a.txt"), "signed in: private repo page opens inside the console, no second login");
   check(/<nav class='mio-tabs'>[\s\S]*<a class='mio-tab-set' href='\/~mio\/repos\/permtest'>[\s\S]*<\/nav>/.test(pvh), "console repo page: Settings tab at the end of the tab bar -> /~mio/repos/permtest");
   check(/<\/h1><span class='mio-badge rl-priv-h'>/.test(pvh), "console repo page: Private badge next to the title");
+  check(/<div class='mio-refbar'><details class='mio-menu mio-ref' data-menu>/.test(pvh) && /href=["']\/~mio\/r\/permtest\/tree\/\?h=adminbranch["']/.test(pvh) && !/<select name='h'/.test(pvh) && !/<details/.test(/<nav class='mio-tabs'>([\s\S]*?)<\/nav>/.exec(pvh)?.[1] ?? "<details"), "branch switcher: GitHub-style menu below the tab bar (links, no select/submit)");
   check(!/class='rl-set'/.test(both), "console list rows no longer carry a settings link");
   check(/<section class='mio-card st-panel'[\s\S]*<ul class='st-rings'>/.test(both) && (both.match(/class='st-ring-item/g) || []).length >= 2 && !/st-kpis|st-quota/.test(both), "storage card is one row of rings (DO / R2 …)");
   check(/href=["']\/~mio\/r\/permtest\/tree\//.test(pvh) && !/href=["']\/permtest\//.test(pvh), "in-repo links (tree/log/commits…) stay under /~mio/r/permtest/");
@@ -258,6 +260,41 @@ try {
   }
   const list = await (await consoleGet("/~mio/tokens")).text();
   check(list.includes("hark-writer") && !list.includes(tokens["hark-writer"]), "token list shows names, never plaintext");
+
+  console.log("== account entry points + standalone token page");
+  const homeNow = await (await consoleGet("/~mio/")).text();
+  check(/<div class='mio-head-act'><a class='mio-btn mio-btn-secondary ad-tokens' href='\/~mio\/tokens'>/.test(homeNow), "console list page header has an Access tokens button");
+  check(/<details class='mio-menu mio-acct' data-menu>[\s\S]*href='\/~mio\/tokens'[\s\S]*href='\/~mio\/password'[\s\S]*action='\/~mio\/logout'[\s\S]*<\/details>/.test(homeNow) && !homeNow.includes("id='mh-auth'"), "top-bar account menu: tokens / password / sign out");
+  check(/<details class='mio-menu mio-acct'/.test(await (await consoleGet("/~mio/r/permtest/")).text()), "account menu on console repository pages too");
+  check(!/data-dialog-layer/.test(list) && /class='rs-page'/.test(list) && /href='\/~mio\/tokens' aria-current='page'/.test(list), "token page is a standalone page (no dialog) with the account nav");
+  check(/<select name='expires'>/.test(list) && /value='30' selected/.test(list) && ["7", "90", "365", "never"].every((v) => list.includes(`value='${v}'`)), "expiration choices 7/30/90/365 days/never, default 30");
+  check(!/data-dialog-layer/.test(await (await consoleGet("/~mio/password")).text()), "password page is standalone too");
+
+  console.log("== token expiry");
+  const legacyRow = /<span data-noi18n>hark-reader<\/span>[\s\S]*?<td class='tk-t tk-e'>([\s\S]*?)<\/td>/.exec(list)?.[1] ?? "";
+  check(/Never/.test(legacyRow), "token created without an expiration (as before) never expires");
+  const bad30 = await consolePost("/~mio/tokens", { csrf, name: "x", role: "reader", expires: "999" });
+  check(bad30.status === 400, "unknown expiration -> 400");
+  const c30 = await consolePost("/~mio/tokens", { csrf, name: "hark-30d", role: "reader", expires: "30" });
+  const c30h = await c30.text();
+  const T30 = /readonly value='(mgt_[A-Za-z0-9_-]+)'/.exec(c30h)?.[1];
+  const want30 = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
+  check(c30.status === 200 && T30 && c30h.includes(want30), `30-day token created, expires ${want30}`);
+  const cx = await consolePost("/~mio/tokens", { csrf, name: "hark-short", role: "reader", expires: "test" });
+  const TX = /readonly value='(mgt_[A-Za-z0-9_-]+)'/.exec(await cx.text())?.[1];
+  check(cx.status === 200 && TX, "short-lived token created");
+  check(git(tmp, "ls-remote", url(TX, "permtest")).code === 0, "not yet expired: token reads the private repo");
+  await new Promise((r) => setTimeout(r, 4500));
+  const lx = git(tmp, "ls-remote", url(TX, "permtest"));
+  check(lx.code !== 0, "expired token: git ls-remote refused");
+  check((await fetch(`${BASE}/permtest.git/info/refs?service=git-upload-pack`, { headers: basic(TX) })).status === 401, "expired token: private info/refs 401");
+  check((await fetch(`${BASE}/mio-cli.git/info/refs?service=git-upload-pack`, { headers: basic(TX) })).status === 401, "expired token: refused even on a public repo");
+  check((await fetch(`${BASE}/api/repos`, { headers: basic(TX) })).status === 401, "expired token: /api/repos 401");
+  check(git(tmp, "ls-remote", url(T30, "permtest")).code === 0, "unexpired 30-day token still works");
+  check(git(tmp, "ls-remote", url(tokens["hark-reader"], "permtest")).code === 0, "token without expiration still works");
+  const listX = await (await consoleGet("/~mio/tokens")).text();
+  check(/<tr class='is-expired'><td class='tk-name'><span data-noi18n>hark-short<\/span>[\s\S]*?class='tk-exp is-expired'/.test(listX), "list marks the expired token in red (Expired)");
+  check(new RegExp(`hark-30d</span>[\\s\\S]*?<td class='tk-t tk-e'><span title='[^']+'>${want30}</span>`).test(listX), "list shows the 30-day token's expiry date");
   const W = tokens["hark-writer"], R = tokens["hark-reader"], W2 = tokens["hark-writer2"];
 
   console.log("== reader");
@@ -334,7 +371,8 @@ try {
   const listHtml = await (await consoleGet("/~mio/tokens")).text();
   const id = new RegExp(`>hark-writer</span>[\\s\\S]*?/~mio/tokens/([A-Za-z0-9_-]+)/revoke`).exec(listHtml)?.[1];
   const confirm = await consoleGet(`/~mio/tokens/${id}/revoke`);
-  check(confirm.status === 200 && (await confirm.text()).includes("hark-writer"), "revoke confirmation dialog");
+  const confirmHtml = await confirm.text();
+  check(confirm.status === 200 && confirmHtml.includes("hark-writer") && !/data-dialog-layer/.test(confirmHtml) && /class='rs-panel rs-danger'/.test(confirmHtml), "revoke confirmation (standalone page)");
   check((await consolePost(`/~mio/tokens/${id}/revoke`, { csrf })).status === 303, "revoke");
   check(git(tmp, "ls-remote", url(W, "permtest")).code !== 0, "revoked writer token fails immediately");
   check(git(tmp, "ls-remote", url(R, "permtest")).code === 0, "other tokens unaffected");

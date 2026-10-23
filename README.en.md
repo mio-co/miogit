@@ -32,7 +32,8 @@ git uses HTTP Basic: any username (e.g. `x`), the token as the password.
 | reader | ✓ | ✗ | ✗ | ✗ |
 
 - `GIT_TOKEN` (the original push password) and `GIT_TOKENS` are always admin.
-- Other tokens are created in the console (`/~mio/tokens`); the secret is shown once, only its SHA-256 is stored. Revocation is immediate.
+- Other tokens are created in the console (`/~mio/tokens`, also in the top-bar account menu); the secret is shown once, only its SHA-256 is stored. Revocation is immediate.
+- Tokens take an expiration: 7 / 30 (default) / 90 days, 1 year, or never. An expired token gets 401 on every request, public repositories included; tokens created before expiry existed never expire.
 - If any ref in a push is refused, the whole push is refused (never half-applied); git shows the standard `! [remote rejected] … (reason)` or `remote error: …`.
 - Tokens cannot sign in to the web console, and the console cookie (scoped to `/~mio/`) is never a git credential.
 
