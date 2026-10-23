@@ -343,16 +343,17 @@ export function createConsole(deps: ConsoleDeps) {
   <input type='text' name='username' value='${esc(adminUser(env))}' autocomplete='username' hidden readonly tabindex='-1' aria-hidden='true'/>
   <label class='mio-field'><span>${t("Current password", "当前密码")}</span><input type='password' name='current' autocomplete='current-password' required autofocus/></label>
   <label class='mio-field'><span>${t("New password (at least 12 characters)", "新密码（至少 12 位）")}</span><input type='password' name='next' autocomplete='new-password' minlength='12' required/></label>
-  <label class='mio-field'><span>${t("Repeat new password", "再次输入新密码")}</span><input type='password' name='confirm' autocomplete='new-password' minlength='12' required/></label>`;
+  <label class='mio-field'><span>${t("Repeat new password", "再次输入新密码")}</span><input type='password' name='confirm' autocomplete='new-password' minlength='12' required/></label>
+  <button type='submit' class='mio-btn mio-btn-primary mio-btn-lg lg-submit'>${t("Change password", "修改密码")}</button>`;
     return overPage(req, env, next, dialog({
       icon: ICON_LOCK_KEY,
       size: "sm",
       title: t("Change console password", "修改管理台密码"),
       desc: t("Other signed-in browsers are signed out.", "修改后，其他已登录的浏览器会退出登录。"),
       body,
-      footer: `<a class='mio-btn mio-btn-secondary mio-btn-md' href='${esc(next)}'>${t("Cancel", "取消")}</a>
-    <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Change password", "修改密码")}</button>`,
+      footer: "",
       cancel: next,
+      backdropCloses: false,
       formAction: `${CONSOLE}/password`,
     }), error ? 400 : 200);
   }
