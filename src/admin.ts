@@ -308,14 +308,14 @@ export function createConsole(deps: ConsoleDeps) {
     const form = `<form class='dlg-sec' id='new-token' method='post' action='${CONSOLE}/tokens'>${csrfIn}
   <h3>${t("New token", "新建令牌")}</h3>
   ${opts.error ? `<div class='mio-dialog-err' role='alert'>${opts.error}</div>` : ""}
-  <div class='mio-row'>
+  <div class='mio-row tk-row'>
     <label class='mio-field'><span>${t("Name", "名称")}</span><input type='text' name='name' maxlength='64' required placeholder='hark6' autocomplete='off' spellcheck='false'/></label>
     <label class='mio-field mio-narrow'><span>${t("Role", "角色")}</span><select name='role'>
       <option value='writer'>${ROLE_LABEL.writer[1]} writer</option><option value='reader'>${ROLE_LABEL.reader[1]} reader</option><option value='admin'>${ROLE_LABEL.admin[1]} admin</option></select></label>
     <label class='mio-field mio-narrow'><span>${t("Expiration", "过期时间")}</span><select name='expires'>${expiryOpts}</select></label>
+    <button type='submit' class='mio-btn mio-btn-primary mio-btn-md tk-create'>${t("Create token", "创建令牌")}</button>
   </div>
-  <div class='dlg-sec-f'><p class='mio-note'>${t("Writer: read everything, push branches other than main; no tags, no new repositories. Reader: read only. The token is shown once.", "写入：可读全部仓库，可推送 main 以外的分支，不能推标签、不能建仓库。只读：只能拉取。令牌明文只显示一次。")}</p>
-  <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Create token", "创建令牌")}</button></div>
+  <p class='mio-note tk-hint'>${t("Writer: read everything, push branches other than main; no tags, no new repositories. Reader: read only. The token is shown once.", "写入：可读全部仓库，可推送 main 以外的分支，不能推标签、不能建仓库。只读：只能拉取。令牌明文只显示一次。")}</p>
 </form>`;
     const list = `<section class='dlg-sec'><h3>${t("Your tokens", "已有令牌")}</h3>${table}</section>`;
     return overPage(req, env, next, dialog({

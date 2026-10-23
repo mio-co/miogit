@@ -143,8 +143,11 @@ a.branch-deco:hover,a.tag-deco:hover{filter:brightness(.97)}
 
 /* ========== 输入（MioUI Input field：surface-3 + 发丝边，h32，焦点环） ========== */
 select,input[type=text],input[type=search],input[type=password],input:not([type]){font:inherit;font-size:14px;color:var(--cds-text-primary);
-  background:var(--cds-surface-3);border:0;box-shadow:inset 0 0 0 1px var(--cds-border);border-radius:var(--cds-radius);
+  background-color:var(--cds-surface-3);border:0;box-shadow:inset 0 0 0 1px var(--cds-border);border-radius:var(--cds-radius);
   height:var(--cds-h-control);padding:0 10px;min-width:0;transition:box-shadow var(--cds-dur-base) var(--cds-ease-swift)}
+select,.mio-field select{appearance:none;-webkit-appearance:none;padding-right:32px;cursor:pointer;text-overflow:ellipsis;
+  background-image:linear-gradient(45deg,transparent 50%,var(--cds-text-secondary) 50%),linear-gradient(135deg,var(--cds-text-secondary) 50%,transparent 50%);
+  background-position:calc(100% - 17px) 50%,calc(100% - 12px) 50%;background-size:5px 5px,5px 5px;background-repeat:no-repeat}
 select:hover,input:hover{box-shadow:inset 0 0 0 1px var(--cds-border-strong)}
 select:focus-visible,input:focus-visible{outline:none;box-shadow:var(--cds-focus-shadow)}
 ::placeholder{color:var(--cds-text-placeholder)}
@@ -446,8 +449,9 @@ html:has([data-dialog-layer]){overflow:hidden}
 
 /* 表单字段（MioUI Field：标签 12.5px 500 次要色，输入 h40 / 16px） */
 .mio-field{display:flex;flex-direction:column;gap:6px;font-size:12.5px;font-weight:500;color:var(--cds-text-secondary);min-width:0}
-.mio-field :is(input,select,textarea){font:inherit;font-weight:400;font-size:15px;color:var(--cds-text-primary);background:var(--cds-surface-3);border:0;box-shadow:inset 0 0 0 1px var(--cds-border);
+.mio-field :is(input,select,textarea){font:inherit;font-weight:400;font-size:15px;color:var(--cds-text-primary);background-color:var(--cds-surface-3);border:0;box-shadow:inset 0 0 0 1px var(--cds-border);
   border-radius:var(--cds-radius);height:var(--cds-h-control-lg);padding:0 12px;width:100%;transition:box-shadow var(--cds-dur-base) var(--cds-ease-swift)}
+.mio-field select{padding-right:32px}
 .mio-field textarea{height:auto;min-height:72px;padding:8px 12px;resize:vertical}
 .mio-field :is(input,select,textarea):hover{box-shadow:inset 0 0 0 1px var(--cds-border-strong)}
 .mio-field :is(input,select,textarea):focus-visible{outline:none;box-shadow:var(--cds-focus-shadow)}
@@ -482,8 +486,12 @@ table.tk td.tk-act{text-align:right;white-space:nowrap}
 .tk-exp.is-expired{display:inline-flex;align-items:center;height:20px;white-space:nowrap;font-family:var(--cds-font-body);font-size:11px;padding:0 8px;border-radius:var(--cds-radius-pill);font-weight:500;
   background:color-mix(in srgb,var(--cds-fill-danger) 12%,transparent);color:var(--cds-text-danger)}
 table.tk tr.is-expired td.tk-name > span:first-child{color:var(--cds-text-secondary)}
+.tk-row > .mio-field.mio-narrow{flex:0 0 8.5rem}
+.tk-row > .mio-field:first-child{flex:1 1 12rem;max-width:20rem}
+.tk-row .tk-create{height:var(--cds-h-control-lg);margin-left:auto}
+.tk-hint{margin:0}
 .tk-reveal{padding:16px;border-radius:var(--cds-radius-card);background:var(--cds-accent-soft)}
-@media (max-width:640px){.mio-row{flex-direction:column;align-items:stretch}.mio-row > .mio-field.mio-narrow{flex:1}
+@media (max-width:640px){.mio-row{flex-direction:column;align-items:stretch}.mio-row > .mio-field.mio-narrow{flex:1}.tk-row > .mio-field:first-child{max-width:none;flex:1}.tk-row .tk-create{width:100%;margin-left:0}
   table.tk{min-width:0}table.tk :is(th,td):is(.tk-c,.tk-e,.tk-used){display:none}
   .tk-sub{display:block;margin-top:2px;font-weight:400;font-size:11.5px;color:var(--cds-text-secondary);font-family:var(--font-anthropic-mono);font-variant-numeric:tabular-nums}}
 
