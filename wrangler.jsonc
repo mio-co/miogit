@@ -33,7 +33,7 @@
     "ADMIN_USER": "mio",
     // Cloudflare Access application protecting miogit.300031.xyz/~mio/ (JWT re-verified in the Worker)
     "ACCESS_TEAM_DOMAIN": "sakune.cloudflareaccess.com",
-    "ACCESS_AUD": ""
+    "ACCESS_AUD": "f90993d75929ac959c7490b9ab4e78817613bb17e7e42cfe72e205b4348f342a"
   }
   // Secrets (wrangler secret put …; .dev.vars locally):
   //   GIT_TOKEN            admin git token (the original push password)

@@ -163,7 +163,8 @@ try {
   check(sp.status === 200 && csrf, "settings page with CSRF token");
   check((await consolePost("/~mio/repos/permtest", { description: "x", private: "1" })).status === 403, "POST without CSRF -> 403");
   check((await consolePost("/~mio/repos/permtest", { csrf, description: "x", private: "1" }, { origin: "https://evil.example" })).status === 403, "cross-origin POST -> 403");
-  check((await consolePost("/~mio/repos/permtest", { csrf, description: "perm test", private: "1" })).status === 303, "save settings (private)");
+  check((await consolePost("/~mio/repos/permtest", { csrf, description: "x", private: "1" }, { origin: "null", "sec-fetch-site": "cross-site" })).status === 403, "Origin: null + cross-site -> 403");
+  check((await consolePost("/~mio/repos/permtest", { csrf, description: "perm test", private: "1" }, { origin: "null", "sec-fetch-site": "same-origin" })).status === 303, "save settings (private) — browser form post (Origin: null, same-origin)");
   check((await fetch(`${BASE}/permtest.git/info/refs?service=git-upload-pack`)).status === 401, "private repo: anonymous info/refs 401");
   check((await fetch(`${BASE}/permtest.git/info/refs?service=git-upload-pack`, { headers: { cookie } })).status === 401, "console cookie is not a git credential");
   check((await fetch(`${BASE}/permtest/config`, { method: "PUT", headers: basic(ADMIN_TOKEN), body: "{}" })).status === 404, "legacy PUT /<repo>/config gone (moved to console)");
@@ -265,7 +266,7 @@ try {
 
   console.log("== revoke");
   const listHtml = await (await consoleGet("/~mio/tokens")).text();
-  const id = new RegExp(`hark-writer</td>[\\s\\S]*?/~mio/tokens/([A-Za-z0-9_-]+)/revoke`).exec(listHtml)?.[1];
+  const id = new RegExp(`>hark-writer</span>[\\s\\S]*?/~mio/tokens/([A-Za-z0-9_-]+)/revoke`).exec(listHtml)?.[1];
   const confirm = await consoleGet(`/~mio/tokens/${id}/revoke`);
   check(confirm.status === 200 && (await confirm.text()).includes("hark-writer"), "revoke confirmation dialog");
   check((await consolePost(`/~mio/tokens/${id}/revoke`, { csrf })).status === 303, "revoke");

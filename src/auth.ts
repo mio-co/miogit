@@ -191,6 +191,10 @@ export async function csrfValid(env: Env, passHash: string, session: string, giv
 export function sameOrigin(req: Request): boolean {
   const url = new URL(req.url);
   const origin = req.headers.get("origin");
+  const site = req.headers.get("sec-fetch-site");
+  // pages are served with Referrer-Policy: no-referrer, under which browsers
+  // send "Origin: null" on same-origin form posts: decide by Sec-Fetch-Site
+  if (origin === "null") return site === "same-origin";
   if (origin) {
     try {
       return new URL(origin).host === url.host;
@@ -198,7 +202,6 @@ export function sameOrigin(req: Request): boolean {
       return false;
     }
   }
-  const site = req.headers.get("sec-fetch-site");
   return !site || site === "same-origin";
 }
 

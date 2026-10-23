@@ -167,12 +167,12 @@ export function createConsole(deps: ConsoleDeps) {
     }
     const rows = await registry.listTokens();
     const table = rows.length
-      ? `<div class='tk-wrap'><table class='tk'><thead><tr><th>${t("Name", "名称")}</th><th>${t("Role", "角色")}</th><th>${t("Created", "创建时间")}</th><th class='tk-used'>${t("Last used", "最近使用")}</th><th><span class='sr-only'>${t("Actions", "操作")}</span></th></tr></thead><tbody>` +
+      ? `<div class='tk-wrap'><table class='tk'><thead><tr><th>${t("Name", "名称")}</th><th>${t("Role", "角色")}</th><th class='tk-c'>${t("Created", "创建时间")}</th><th class='tk-used'>${t("Last used", "最近使用")}</th><th><span class='sr-only'>${t("Actions", "操作")}</span></th></tr></thead><tbody>` +
         rows
           .map(
             (r) =>
-              `<tr><td class='tk-name' data-noi18n>${esc(r.name)}</td><td><span class='tk-role' data-role='${r.role}'>${t(ROLE_LABEL[r.role][0], ROLE_LABEL[r.role][1])}</span></td>` +
-              `<td class='tk-t'>${fmtTime(r.created)}</td><td class='tk-t tk-used'>${r.last_used ? fmtTime(r.last_used) : t("Never", "从未")}</td>` +
+              `<tr><td class='tk-name'><span data-noi18n>${esc(r.name)}</span><span class='tk-sub'>${t("Created", "创建")} ${fmtTime(r.created)} · ${t("Last used", "最近使用")} ${r.last_used ? fmtTime(r.last_used) : t("never", "从未")}</span></td><td><span class='tk-role' data-role='${r.role}'>${t(ROLE_LABEL[r.role][0], ROLE_LABEL[r.role][1])}</span></td>` +
+              `<td class='tk-t tk-c'>${fmtTime(r.created)}</td><td class='tk-t tk-used'>${r.last_used ? fmtTime(r.last_used) : t("Never", "从未")}</td>` +
               `<td class='tk-act'><a class='mio-btn mio-btn-danger' href='${CONSOLE}/tokens/${encodeURIComponent(r.id)}/revoke'>${t("Revoke", "吊销")}</a></td></tr>`
           )
           .join("") +
