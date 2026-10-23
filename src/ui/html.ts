@@ -1,5 +1,5 @@
 import { UI_VER } from "./mio";
-import { ICON_CARET_DOWN, ICON_CHECK, ICON_GIT_BRANCH } from "./icons";
+import { ICON_ARROW_LEFT, ICON_CARET_DOWN, ICON_CHECK, ICON_CODE, ICON_GIT_BRANCH, ICON_HISTORY, ICON_REPO, ICON_WARNING } from "./icons";
 const ESCAPES: Record<string, string> = {
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "`": "&#96;",
 };
@@ -61,7 +61,7 @@ export interface LayoutOpts {
   title: string;
   /** repo name when rendering a repo page */
   repo?: string;
-  /** description line under the title */
+  /** repository description (shown once, in the About card of the Code page) */
   sub: string;
   /** rendered after <main>, outside every transformed container (modal dialogs) */
   overlay?: string;
@@ -69,14 +69,22 @@ export interface LayoutOpts {
   tab?: string;
   /** current ref for tab links */
   ref?: string;
+  /** the repository's default branch (Code tab goes to the overview when ref is the default) */
+  headRef?: string;
   /** breadcrumb path html (tree pages) */
   pathBar?: string;
-  /** show the about tab (repo has a README) */
+  /** legacy flag (README now lives on the Code page only) */
   hasAbout?: boolean;
   /** branch names for the switcher dropdown */
   branches?: string[];
   /** target path of the branch switcher (current page path); each branch links to it with ?h= */
   formAction?: string;
+  /** show the branch switcher row (default: on Code / Commits / Stats pages) */
+  switcher?: boolean;
+  /** extra items after the switcher in the branch row (e.g. branch/tag counts) */
+  refExtra?: string;
+  /** right-aligned actions in the branch row (e.g. the Clone menu) */
+  refActions?: string;
   /** non-repo pages: page heading (trusted HTML) instead of "Repositories", optional sub line and right-aligned actions */
   heading?: { title: string; sub?: string; actions?: string };
   body: string;
@@ -91,28 +99,50 @@ export function t(en: string, zh: string): string {
   return `<span data-zh='${esc(zh)}'>${esc(en)}</span>`;
 }
 
+/** which tab a page id belongs to (GitHub repository tabs) */
+const TAB_OF: Record<string, string> = {
+  summary: "code", tree: "code", about: "code", code: "code",
+  log: "log", commit: "log", diff: "log",
+  refs: "branches", branches: "branches",
+  tags: "branches", tag: "branches",
+  stats: "code",
+};
+
+/** MioUI Breadcrumb: repo root / dir / … / current (current is plain text, aria-current) */
+export function breadcrumb(items: { label: string; href?: string; html?: boolean }[]): string {
+  const sep = `<li class='mio-bc-sep' role='presentation' aria-hidden='true'>/</li>`;
+  return `<nav class='mio-bc' aria-label='Breadcrumb'><ol>` +
+    items.map((it, i) => {
+      const last = i === items.length - 1;
+      const label = it.html ? it.label : esc(it.label);
+      const inner = last || !it.href
+        ? `<span${last ? " aria-current='page'" : ""}>${label}</span>`
+        : `<a href='${it.href}'>${label}</a>`;
+      return (i ? sep : "") + `<li>${inner}</li>`;
+    }).join("") +
+    `</ol></nav>`;
+}
+
 export function layout(o: LayoutOpts): string {
   const r = o.repo ? `/${repoUrl(o.repo)}` : "";
   const q = o.ref ? `?h=${encodeURIComponent(o.ref)}` : "";
-  const tabs: [string, string][] = o.repo
+  const onDefault = !o.ref || !o.headRef || o.ref === o.headRef;
+  const tabs: [string, string, string, string][] = o.repo
     ? [
-        ["summary", `${r}/${q}`],
-        ["tree", `${r}/tree/${q}`],
-        ["log", `${r}/log/${q}`],
-        ["refs", `${r}/refs/${q}`],
-        ["commit", `${r}/commit/${q}`],
-        ["diff", `${r}/diff/${q}`],
-        ["stats", `${r}/stats/${q}`],
-        ...(o.hasAbout ? [["about", `${r}/about/${q}`] as [string, string]] : []),
+        ["code", onDefault ? `${r}/` : `${r}/tree/${q}`, ICON_CODE, t("Code", "代码")],
+        ["log", `${r}/log/${q}`, ICON_HISTORY, t("Commits", "提交")],
+        ["branches", `${r}/branches/`, ICON_GIT_BRANCH, t("Branches", "分支")],
       ]
     : [];
+  const activeTab = TAB_OF[o.tab ?? ""] ?? o.tab;
   const tabHtml = tabs
-    .map(([id, href]) => `<a${id === o.tab ? " class='active' aria-current='page'" : ""} href='${href}'>${id}</a>`)
+    .map(([id, href, icon, label]) => `<a${id === activeTab ? " class='active' aria-current='page'" : ""} href='${href}'>${icon}${label}</a>`)
     .join("");
   // GitHub-style branch picker: a button (GitBranch + name + caret) opening a
   // menu of links (?h=<branch>); <details> needs no script, app.js only adds
   // outside-click / Escape closing
-  const hasSwitcher = !!(o.repo && o.branches && o.branches.length > 1);
+  const wantSwitcher = o.switcher ?? (activeTab === "code" || activeTab === "log");
+  const hasSwitcher = !!(o.repo && wantSwitcher && o.branches && o.branches.length > 0);
   const target = esc(o.formAction ?? `${r}/`);
   const switcher = hasSwitcher
     ? `<details class='mio-menu mio-ref' data-menu>` +
@@ -127,17 +157,19 @@ export function layout(o: LayoutOpts): string {
   const atom = o.repo
     ? `<link rel='alternate' title='Atom feed' href='${r}/atom/${q}' type='application/atom+xml'/>`
     : "";
-  const crumb = o.repo
-    ? `<span class='sep'>/</span><a href='${r}/'>${esc(o.repo)}</a>`
-    : "";
   const head = o.tab === "login" ? "" : o.repo
-    ? `<div class='mio-head'><h1>${esc(o.repo)}</h1>${o.ref && !hasSwitcher ? `<span class='mio-badge mono'>${esc(o.ref)}</span>` : ""}</div>` +
-      `<p class='mio-sub'>${o.sub ? esc(o.sub) : t("No description", "暂无描述")}</p>`
+    ? `<div class='mio-head mio-repo-head'><span class='mio-head-ico'>${ICON_REPO}</span><h1><a href='${r}/'>${esc(o.repo)}</a></h1></div>`
     : o.heading
       ? `<div class='mio-head'><h1>${o.heading.title}</h1>${o.heading.actions ? `<div class='mio-head-act'>${o.heading.actions}</div>` : ""}</div>` +
-        (o.heading.sub ? `<p class='mio-sub'>${o.heading.sub}</p>` : `<div style='height:14px'></div>`)
+        (o.heading.sub ? `<p class='mio-sub'>${o.heading.sub}</p>` : "")
       : `<div class='mio-head'><h1>${t("Repositories", "仓库")}</h1></div>` +
-        (o.siteDesc || o.sub ? `<p class='mio-sub'>${esc(o.siteDesc || o.sub)}</p>` : `<div style='height:14px'></div>`);
+        (o.siteDesc || o.sub ? `<p class='mio-sub'>${esc(o.siteDesc || o.sub)}</p>` : "");
+  // GitHub code-page row: branch picker first, then counts / breadcrumb, actions on the right.
+  // It sits at the top of the content (a page may place it with the <!--gh-bar--> marker).
+  const bar = switcher || o.pathBar || o.refExtra || o.refActions
+    ? `<div class='gh-bar'>${switcher}${o.refExtra ?? ""}${o.pathBar ? `<div class='path'>${o.pathBar}</div>` : ""}${o.refActions ? `<div class='gh-bar-act'>${o.refActions}</div>` : ""}</div>`
+    : "";
+  const body = o.body.includes("<!--gh-bar-->") ? o.body.replace("<!--gh-bar-->", bar) : bar + o.body;
   return `<!DOCTYPE html>
 <html lang='en' data-accent='clay'>
 <head>
@@ -153,20 +185,18 @@ ${atom}
 </head>
 <body>
 <header class='mio-top'><div class='mio-wrap'>
-<a class='mio-brand' href='/'><svg class='mio-logo' viewBox='0 0 64 64' aria-hidden='true'><path d='M8 50V15l18 19 18-19v35' fill='none' stroke='currentColor' stroke-width='7.5' stroke-linecap='round' stroke-linejoin='round'/><circle cx='56.5' cy='50' r='5' fill='#d97757'/></svg><span class='site'>${esc(o.site)}</span></a>
-<nav class='mio-crumb' aria-label='breadcrumb'>${crumb}</nav>
+<a class='mio-brand' href='/'><svg class='mio-logo' viewBox='0 0 64 64' aria-hidden='true'><path d='M8 50V15l18 19 18-19v35' fill='none' stroke='currentColor' stroke-width='7.5' stroke-linecap='round' stroke-linejoin='round'/><circle cx='56.5' cy='50' r='5' fill='currentColor' class='mio-logo-dot'/></svg><span class='site'>${esc(o.site)}</span></a>
 <div class='mio-actions'>
 <span id='mh-auth'></span>
 <div class='mio-seg' role='group' aria-label='Language'><button type='button' data-set-lang='zh'>中</button><button type='button' data-set-lang='en'>EN</button></div>
 <div class='mio-seg' role='group' aria-label='Theme'><button type='button' data-set-theme='light' title='Light' aria-label='Light' data-zh-title='浅色'>${ICON_SUN}</button><button type='button' data-set-theme='system' title='System' aria-label='System' data-zh-title='跟随系统'>${ICON_AUTO}</button><button type='button' data-set-theme='dark' title='Dark' aria-label='Dark' data-zh-title='深色'>${ICON_MOON}</button></div>
 </div>
 </div></header>
-<main id='cgit'>
+<main id='cgit'${o.repo ? " class='is-repo'" : ""}>
 ${head}
 ${tabHtml ? `<nav class='mio-tabs'>${tabHtml}</nav>` : ""}
-${switcher || o.pathBar ? `<div class='mio-refbar'>${switcher}${o.pathBar ? `<div class='path'>${o.pathBar}</div>` : ""}</div>` : ""}
 <div class='content'>
-${o.body}
+${body}
 </div>
 </main>
 <footer class='mio-foot'><div class='mio-wrap mio-foot-in'><div class='mio-copy'>&copy; ${new Date().getUTCFullYear()} Mio</div><nav class='mio-friends' aria-label='Friends'><a href='https://mio.300031.xyz' target='_blank' rel='noopener'>MioCore</a><a href='https://overlord.300031.xyz/#top' target='_blank' rel='noopener'>OVERLORD</a><a href='https://cee.edu.pl' target='_blank' rel='noopener'>CeeMail</a><a href='https://nats.300031.xyz/' target='_blank' rel='noopener'>Amaeru Connect</a></nav></div></footer>
@@ -174,6 +204,17 @@ ${o.overlay ?? ""}
 </body>
 </html>
 `;
+}
+
+/** MioUI EmptyState: icon, title, description, optional action (all trusted HTML) */
+export function emptyState(o: { icon?: string; title: string; desc?: string; action?: string; extra?: string; bare?: boolean }): string {
+  return `<div class='mio-empty${o.bare ? " is-bare" : ""}'>` +
+    (o.icon ? `<div class='mio-empty-ico'>${o.icon}</div>` : "") +
+    `<h3>${o.title}</h3>` +
+    (o.desc ? `<p>${o.desc}</p>` : "") +
+    (o.extra ?? "") +
+    (o.action ? `<div class='mio-empty-act'>${o.action}</div>` : "") +
+    `</div>`;
 }
 
 const CSP =
@@ -193,6 +234,12 @@ export function htmlResponse(html: string, status = 200): Response {
   });
 }
 
+/** error / not-found page: MioUI Result-style empty state with a way back */
 export function errorPage(o: Omit<LayoutOpts, "body">, msg: string, status = 404): Response {
-  return htmlResponse(layout({ ...o, body: `<div class='error'>${esc(msg)}</div>` }), status);
+  const back = o.repo
+    ? `<a class='mio-btn mio-btn-secondary mio-btn-md' href='/${repoUrl(o.repo)}/'>${ICON_ARROW_LEFT}${t("Back to repository", "返回仓库")}</a>`
+    : `<a class='mio-btn mio-btn-secondary mio-btn-md' href='/'>${ICON_ARROW_LEFT}${t("All repositories", "全部仓库")}</a>`;
+  const title = status === 404 ? t("Not found", "没有找到") : status === 403 ? t("Access denied", "没有权限") : t("Something went wrong", "出错了");
+  const body = emptyState({ icon: ICON_WARNING, title, desc: `<span class='error' data-noi18n>${esc(msg)}</span>`, action: back });
+  return htmlResponse(layout({ ...o, switcher: false, body }), status);
 }

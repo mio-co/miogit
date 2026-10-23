@@ -34,11 +34,12 @@ import {
   verifyPassword,
 } from "./auth";
 import { isRole, type Role } from "./policy";
-import { ICON_BOOKS, ICON_CARET_DOWN, ICON_GEAR_SIX, ICON_GLOBE, ICON_KEY, ICON_LOCK_KEY, ICON_SIGN_OUT, ICON_SLIDERS, ICON_USER_CIRCLE, ICON_WARNING } from "./ui/icons";
+import { ICON_COPY, ICON_PENCIL, ICON_X, ICON_BOOKS, ICON_CARET_DOWN, ICON_GEAR_SIX, ICON_GLOBE, ICON_KEY, ICON_LOCK_KEY, ICON_SIGN_OUT, ICON_SLIDERS, ICON_USER_CIRCLE, ICON_WARNING } from "./ui/icons";
 
 export const CONSOLE = "/~mio";
 
 export interface ConsoleDeps {
+  movedTab: (sub: string) => string | null;
   siteBase: (env: Env) => { site: string; siteDesc: string; title: string; sub: string; tab: string };
   /** the repository list, signed-in flavour (stats, private repos), with optional per-row settings links */
   indexBody: (env: Env, signedIn: boolean, settings?: boolean) => Promise<string>;
@@ -120,30 +121,51 @@ function expiryHtml(r: TokenRow, now: number): string {
 }
 
 interface DialogOpts {
-  icon: string;
+  icon?: string;
   title: string;
   desc?: string;
   body: string;
+  /** footer actions (right-aligned; stacked full-width on phones) */
+  footer?: string;
   cancel: string;
-  wide?: boolean;
+  /** MioUI Dialog widths: sm 400 · md 520 (default) · lg 720 */
+  size?: "sm" | "md" | "lg";
   /** render the dialog itself as this form (action) */
   formAction?: string;
   danger?: boolean;
 }
 
+/**
+ * MioUI Dialog: 16px radius, popover shadow, blurred backdrop; header (title +
+ * description) with a close button, a body that scrolls inside the dialog's
+ * height cap, and a footer. Works without script: the backdrop and the close
+ * button are links back to the page underneath (app.js adds Escape + focus trap).
+ */
 function dialog(o: DialogOpts): string {
   const tag = o.formAction ? "form" : "div";
   const formAttrs = o.formAction ? ` method='post' action='${esc(o.formAction)}'` : "";
   return `
 <div class='mio-dialog-layer' data-dialog-layer>
-<div class='mio-backdrop'></div>
-<${tag} class='mio-dialog${o.wide ? " mio-dialog-md" : ""}' role='dialog' aria-modal='true' aria-labelledby='dlg-t'${o.desc ? " aria-describedby='dlg-d'" : ""}${formAttrs} data-cancel='${esc(o.cancel)}'>
-  <div class='mio-dialog-icon${o.danger ? " is-danger" : ""}'>${o.icon}</div>
-  <h2 id='dlg-t'>${o.title}</h2>
-  ${o.desc ? `<p id='dlg-d'>${o.desc}</p>` : ""}
+<a class='mio-backdrop' href='${esc(o.cancel)}' tabindex='-1' aria-hidden='true'></a>
+<${tag} class='mio-dialog mio-dialog-${o.size ?? "md"}' role='dialog' aria-modal='true' aria-labelledby='dlg-t'${o.desc ? " aria-describedby='dlg-d'" : ""}${formAttrs} data-cancel='${esc(o.cancel)}'>
+  <div class='mio-dialog-h'>
+    ${o.icon ? `<div class='mio-dialog-icon${o.danger ? " is-danger" : ""}'>${o.icon}</div>` : ""}
+    <h2 id='dlg-t'>${o.title}</h2>
+    ${o.desc ? `<p id='dlg-d'>${o.desc}</p>` : ""}
+  </div>
+  <a class='mio-btn mio-btn-ghost mio-btn-icon mio-dialog-x' href='${esc(o.cancel)}' data-dialog-cancel title='Close' data-zh-title='关闭' aria-label='Close'>${ICON_X}</a>
+  <div class='mio-dialog-b' data-cds-scroll-fade='vertical'>
   ${o.body}
+  </div>
+  ${o.footer ? `<div class='mio-dialog-f'>${o.footer}</div>` : ""}
 </${tag}>
 </div>`;
+}
+
+/** where an account dialog returns to: the page it was opened from (never another account dialog) */
+function dialogNext(n: string | null): string {
+  const v = safeNext(n);
+  return /^\/~mio\/(tokens|password|login|logout)(\/|\?|$)/.test(v) ? `${CONSOLE}/` : v;
 }
 
 export function createConsole(deps: ConsoleDeps) {
@@ -158,8 +180,6 @@ export function createConsole(deps: ConsoleDeps) {
     const heading = {
       title: t("Repositories", "仓库"),
       sub: deps.siteBase(env).siteDesc ? esc(deps.siteBase(env).siteDesc) : undefined,
-      // the account pages, one click from the list (also in the top-bar account menu)
-      actions: `<a class='mio-btn mio-btn-secondary ad-tokens' href='${CONSOLE}/tokens'>${ICON_KEY}${t("Access tokens", "访问令牌")}</a>`,
     };
     return noStore(htmlResponse(layout({ ...deps.siteBase(env), title: `${deps.siteBase(env).site} · console`, heading, body })));
   }
@@ -169,7 +189,8 @@ export function createConsole(deps: ConsoleDeps) {
    * kept small): who is signed in, Repositories, Access tokens, Change password,
    * Sign out. A <details> menu, no script needed; app.js adds outside-click / Escape.
    */
-  function accountMenu(env: Env, csrf: string): string {
+  function accountMenu(env: Env, csrf: string, next: string): string {
+    const nq = `?next=${encodeURIComponent(next)}`;
     const user = esc(adminUser(env));
     return (
       `<details class='mio-menu mio-acct' data-menu>` +
@@ -178,8 +199,8 @@ export function createConsole(deps: ConsoleDeps) {
       `<div class='mio-menu-h'>${t("Signed in as", "已登录：")} <b data-noi18n>${user}</b></div>` +
       `<div class='mio-menu-sep' role='separator'></div>` +
       `<a role='menuitem' href='${CONSOLE}/'>${ICON_BOOKS}${t("Repositories", "仓库")}</a>` +
-      `<a role='menuitem' href='${CONSOLE}/tokens'>${ICON_KEY}${t("Access tokens", "访问令牌")}</a>` +
-      `<a role='menuitem' href='${CONSOLE}/password'>${ICON_LOCK_KEY}${t("Change password", "修改密码")}</a>` +
+      `<a role='menuitem' href='${CONSOLE}/tokens${nq}'>${ICON_KEY}${t("Access tokens", "访问令牌")}</a>` +
+      `<a role='menuitem' href='${CONSOLE}/password${nq}'>${ICON_LOCK_KEY}${t("Change password", "修改密码")}</a>` +
       `<div class='mio-menu-sep' role='separator'></div>` +
       `<form method='post' action='${CONSOLE}/logout'><input type='hidden' name='csrf' value='${esc(csrf)}'/><button type='submit' role='menuitem'>${ICON_SIGN_OUT}${t("Sign out", "退出")}</button></form>` +
       `</div></details>`
@@ -192,10 +213,9 @@ export function createConsole(deps: ConsoleDeps) {
   <input type='hidden' name='next' value='${esc(next)}'/>
   <label class='mio-field'><span>${t("Username", "用户名")}</span><input type='text' name='username' value='${esc(user)}' autocomplete='username' autocapitalize='off' spellcheck='false' required${user ? "" : " autofocus"}/></label>
   <label class='mio-field'><span>${t("Password", "密码")}</span><input type='password' name='password' autocomplete='current-password' required${user ? " autofocus" : ""}${error ? " aria-invalid='true'" : ""}/></label>
-  <div class='mio-dialog-actions'>
-    <a class='mio-btn mio-btn-secondary mio-btn-md' href='/' data-dialog-cancel>${t("Cancel", "取消")}</a>
-    <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Sign in", "登录")}</button>
-  </div>`;
+`;
+    const footer = `<a class='mio-btn mio-btn-secondary mio-btn-md' href='/'>${t("Cancel", "取消")}</a>
+    <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Sign in", "登录")}</button>`;
     return page(
       env,
       dialog({
@@ -203,6 +223,8 @@ export function createConsole(deps: ConsoleDeps) {
         title: t("Sign in to the MioGit console", "登录 MioGit 管理台"),
         desc: t("Use the console account. Git access tokens cannot sign in here.", "使用管理台账号登录。git 访问令牌不能用于登录网页。"),
         body,
+        footer,
+        size: "sm",
         cancel: "/",
         formAction: `${CONSOLE}/login`,
       }),
@@ -211,54 +233,57 @@ export function createConsole(deps: ConsoleDeps) {
     );
   }
 
-  type AccountSection = "tokens" | "password";
-
   /**
-   * Account settings as a standalone page, laid out like the repository
-   * settings page (section nav on the left, panels on the right): Access
-   * tokens and Password. No dialog, no script.
+   * Account dialogs (Access tokens, Change password) open over the page they
+   * were opened from: that page is rendered again behind the dialog (inert),
+   * and closing the dialog goes back to it. No script needed.
    */
-  function accountPage(env: Env, section: AccountSection, panels: string, status = 200, title = ""): Response {
-    const nav: [AccountSection, string, string, string][] = [
-      ["tokens", `${CONSOLE}/tokens`, ICON_KEY, t("Access tokens", "访问令牌")],
-      ["password", `${CONSOLE}/password`, ICON_LOCK_KEY, t("Password", "密码")],
-    ];
-    const navHtml =
-      `<nav class='rs-nav' aria-label='Account settings'><ul>` +
-      nav.map(([id, href, icon, label]) => `<li><a href='${href}'${id === section ? " aria-current='page'" : ""}>${icon}${label}</a></li>`).join("") +
-      `</ul></nav>`;
-    const heading: LayoutOpts["heading"] = {
-      title: t("Account settings", "账户设置"),
-      sub: `${t("Signed in as", "已登录：")} <b data-noi18n>${esc(adminUser(env))}</b>`,
-    };
-    const body = `<section class='rs-page'>${navHtml}<div class='rs-main'>${panels}</div></section>`;
-    return noStore(htmlResponse(layout({ ...deps.siteBase(env), title: `${deps.siteBase(env).site} · ${title || section}`, heading, body }), status));
+  async function overPage(req: Request, env: Env, next: string, overlay: string, status = 200): Promise<Response> {
+    let res: Response | null = null;
+    try {
+      const behind = await route(new Request(new URL(next, req.url).toString(), { method: "GET", headers: req.headers }), env);
+      if (behind.status === 200 && (behind.headers.get("content-type") ?? "").startsWith("text/html") && typeof HTMLRewriter !== "undefined") res = behind;
+    } catch {
+      res = null;
+    }
+    if (!res) return page(env, overlay, status);
+    const out = new HTMLRewriter()
+      .on("main#cgit", { element(e) { e.setAttribute("inert", ""); e.setAttribute("aria-hidden", "true"); } })
+      .on("body", { element(e) { e.append(overlay, { html: true }); } })
+      .transform(res);
+    return noStore(new Response(out.body, { status, headers: out.headers }));
   }
 
-  async function tokensPage(env: Env, csrf: string, opts: { error?: string; created?: { row: TokenRow; secret: string }; revoke?: TokenRow } = {}): Promise<Response> {
+  async function tokensDialog(req: Request, env: Env, csrf: string, next: string, opts: { error?: string; created?: { row: TokenRow; secret: string }; revoke?: TokenRow } = {}): Promise<Response> {
     const registry = env.REGISTRY.getByName("registry");
     const now = Date.now();
-    const csrfIn = `<input type='hidden' name='csrf' value='${esc(csrf)}'/>`;
+    const nextIn = `<input type='hidden' name='next' value='${esc(next)}'/>`;
+    const csrfIn = `<input type='hidden' name='csrf' value='${esc(csrf)}'/>` + nextIn;
+    const self = `${CONSOLE}/tokens?next=${encodeURIComponent(next)}`;
     if (opts.revoke) {
       const row = opts.revoke;
-      const panel = `<form class='rs-panel rs-danger' method='post' action='${CONSOLE}/tokens/${encodeURIComponent(row.id)}/revoke'>${csrfIn}
-  <div class='rs-panel-h'><h2>${t(`Revoke “${row.name}”?`, `吊销「${row.name}」？`)}</h2><p class='mio-note'>${t("Every git request with this token fails from now on. This cannot be undone; create a new token instead.", "之后所有使用这个令牌的 git 请求都会失败。不能撤销，需要时请新建令牌。")}</p></div>
-  <div class='rs-actions'>
-    <a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/tokens'>${t("Cancel", "取消")}</a>
-    <button type='submit' class='mio-btn mio-btn-danger-solid mio-btn-md'>${t("Revoke", "吊销")}</button>
-  </div>
-</form>`;
-      return accountPage(env, "tokens", panel, 200, "revoke token");
+      return overPage(req, env, next, dialog({
+        icon: ICON_WARNING,
+        danger: true,
+        size: "sm",
+        title: t(`Revoke “${row.name}”?`, `吊销「${row.name}」？`),
+        desc: t("Every git request with this token fails from now on. This cannot be undone; create a new token instead.", "之后所有使用这个令牌的 git 请求都会失败。不能撤销，需要时请新建令牌。"),
+        body: csrfIn,
+        footer: `<a class='mio-btn mio-btn-secondary mio-btn-md' href='${esc(self)}'>${t("Cancel", "取消")}</a>
+    <button type='submit' class='mio-btn mio-btn-danger-solid mio-btn-md'>${t("Revoke", "吊销")}</button>`,
+        cancel: self,
+        formAction: `${CONSOLE}/tokens/${encodeURIComponent(row.id)}/revoke`,
+      }));
     }
     let reveal = "";
     if (opts.created) {
       const { row, secret } = opts.created;
       const exp = row.expires_at ? t(`Expires ${fmtDay(row.expires_at)}.`, `到期：${fmtDay(row.expires_at)}。`) : t("Never expires.", "永不过期。");
-      reveal = `<section class='rs-panel tk-reveal'>
-  <div class='rs-panel-h'><h2>${t("Copy your new token", "复制新令牌")}</h2><p class='mio-note'>${t(`Token “${row.name}” (${ROLE_LABEL[row.role][0]}) created.`, `已创建令牌「${row.name}」（${ROLE_LABEL[row.role][1]}）。`)} ${exp}</p></div>
-  <label class='mio-field'><span>${t("Token — copy it now, it will not be shown again", "令牌明文：现在复制，离开本页后不会再显示")}</span>
-    <span class='tk-secret'><input type='text' readonly value='${esc(secret)}' aria-label='token' autocomplete='off' spellcheck='false' data-noi18n/><button type='button' class='mio-btn mio-btn-secondary mio-btn-md' data-copy='${esc(secret)}'>${t("Copy", "复制")}</button></span></label>
-  <p class='mio-note rs-note'>${t("Use it as the HTTP password for git (any username), e.g. git clone https://<user>:<token>@host/repo.git. Only its SHA-256 hash is stored.", "在 git 里作为 HTTP 密码使用（用户名随意）。服务器只保存它的 SHA-256 哈希。")}</p>
+      reveal = `<section class='dlg-sec tk-reveal' role='status'>
+  <h3>${t("Copy your new token", "复制新令牌")}</h3>
+  <p class='mio-note'>${t(`Token “${row.name}” (${ROLE_LABEL[row.role][0]}) created.`, `已创建令牌「${row.name}」（${ROLE_LABEL[row.role][1]}）。`)} ${exp} ${t("It will not be shown again.", "离开后不会再显示。")}</p>
+  <span class='tk-secret'><input type='text' readonly value='${esc(secret)}' aria-label='token' autocomplete='off' spellcheck='false' data-noi18n/><button type='button' class='mio-btn mio-btn-secondary mio-btn-md' data-copy='${esc(secret)}'>${ICON_COPY}${t("Copy", "复制")}</button></span>
+  <p class='mio-note'>${t("Use it as the HTTP password for git (any username), e.g. git clone https://<user>:<token>@host/repo.git. Only its SHA-256 hash is stored.", "在 git 里作为 HTTP 密码使用（用户名随意）。服务器只保存它的 SHA-256 哈希。")}</p>
 </section>`;
     }
     const rows = await registry.listTokens();
@@ -270,47 +295,60 @@ export function createConsole(deps: ConsoleDeps) {
             return (
               `<tr${expired ? " class='is-expired'" : ""}><td class='tk-name'><span data-noi18n>${esc(r.name)}</span><span class='tk-sub'>${t("Created", "创建")} ${fmtTime(r.created)} · ${t("Expires", "到期")} ${expiryHtml(r, now)} · ${t("Last used", "最近使用")} ${r.last_used ? fmtTime(r.last_used) : t("never", "从未")}</span></td><td><span class='tk-role' data-role='${r.role}'>${t(ROLE_LABEL[r.role][0], ROLE_LABEL[r.role][1])}</span></td>` +
               `<td class='tk-t tk-c'>${fmtTime(r.created)}</td><td class='tk-t tk-e'>${expiryHtml(r, now)}</td><td class='tk-t tk-used'>${r.last_used ? fmtTime(r.last_used) : t("Never", "从未")}</td>` +
-              `<td class='tk-act'><a class='mio-btn mio-btn-danger' href='${CONSOLE}/tokens/${encodeURIComponent(r.id)}/revoke'>${expired ? t("Delete", "删除") : t("Revoke", "吊销")}</a></td></tr>`
+              `<td class='tk-act'><a class='mio-btn mio-btn-danger mio-btn-xs' href='${CONSOLE}/tokens/${encodeURIComponent(r.id)}/revoke?next=${encodeURIComponent(next)}'>${expired ? t("Delete", "删除") : t("Revoke", "吊销")}</a></td></tr>`
             );
           })
           .join("") +
         `</tbody></table></div>`
       : `<div class='tk-empty'>${t("No tokens yet. The original push password keeps working as an admin token.", "还没有令牌。原来的推送密码继续作为管理员令牌有效。")}</div>`;
-    const list = `<section class='rs-panel'>
-  <div class='rs-panel-h'><h2>${t("Access tokens", "访问令牌")}</h2><p class='mio-note'>${t("One token per assistant. Revoking takes effect immediately; an expired token stops working at once.", "每个助手一个令牌。吊销立即生效，过期的令牌也会立刻失效。")}</p></div>
-  ${table}
-</section>`;
     const testTtl = parseInt(env.TEST_TOKEN_TTL_MS ?? "", 10) > 0;
     const expiryOpts =
       EXPIRY_CHOICES.map(([id, , en, zh]) => `<option value='${id}'${id === EXPIRY_DEFAULT ? " selected" : ""} data-zh='${esc(zh)}'>${esc(en)}</option>`).join("") +
       (testTtl ? `<option value='test'>test</option>` : "");
-    const form = `<form class='rs-panel' id='new-token' method='post' action='${CONSOLE}/tokens'>${csrfIn}
-  <div class='rs-panel-h'><h2>${t("New token", "新建令牌")}</h2><p class='mio-note'>${t("The token is shown once, right after it is created.", "令牌明文只在创建后显示一次。")}</p></div>
+    const form = `<form class='dlg-sec' id='new-token' method='post' action='${CONSOLE}/tokens'>${csrfIn}
+  <h3>${t("New token", "新建令牌")}</h3>
   ${opts.error ? `<div class='mio-dialog-err' role='alert'>${opts.error}</div>` : ""}
-  <label class='mio-field'><span>${t("Name", "名称")}</span><input type='text' name='name' maxlength='64' required placeholder='hark6' autocomplete='off' spellcheck='false'/></label>
   <div class='mio-row'>
-    <label class='mio-field'><span>${t("Role", "角色")}</span><select name='role'>
+    <label class='mio-field'><span>${t("Name", "名称")}</span><input type='text' name='name' maxlength='64' required placeholder='hark6' autocomplete='off' spellcheck='false'/></label>
+    <label class='mio-field mio-narrow'><span>${t("Role", "角色")}</span><select name='role'>
       <option value='writer'>${ROLE_LABEL.writer[1]} writer</option><option value='reader'>${ROLE_LABEL.reader[1]} reader</option><option value='admin'>${ROLE_LABEL.admin[1]} admin</option></select></label>
-    <label class='mio-field'><span>${t("Expiration", "过期时间")}</span><select name='expires'>${expiryOpts}</select></label>
+    <label class='mio-field mio-narrow'><span>${t("Expiration", "过期时间")}</span><select name='expires'>${expiryOpts}</select></label>
   </div>
-  <p class='mio-note rs-note'>${t("Writer: read everything, push branches other than main; no tags, no new repositories. Reader: read only.", "写入：可读全部仓库，可推送 main 以外的分支，不能推标签、不能建仓库。只读：只能拉取。")}</p>
-  <div class='rs-actions'><button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Create token", "创建令牌")}</button></div>
+  <div class='dlg-sec-f'><p class='mio-note'>${t("Writer: read everything, push branches other than main; no tags, no new repositories. Reader: read only. The token is shown once.", "写入：可读全部仓库，可推送 main 以外的分支，不能推标签、不能建仓库。只读：只能拉取。令牌明文只显示一次。")}</p>
+  <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Create token", "创建令牌")}</button></div>
 </form>`;
-    return accountPage(env, "tokens", reveal + list + form, opts.error ? 400 : 200, "tokens");
+    const list = `<section class='dlg-sec'><h3>${t("Your tokens", "已有令牌")}</h3>${table}</section>`;
+    return overPage(req, env, next, dialog({
+      icon: ICON_KEY,
+      size: "lg",
+      title: t("Access tokens", "访问令牌"),
+      desc: t("One token per assistant. Revoking takes effect immediately; an expired token stops working at once.", "每个助手一个令牌。吊销立即生效，过期的令牌也会立刻失效。"),
+      body: reveal + list + form,
+      footer: `<a class='mio-btn mio-btn-secondary mio-btn-md' href='${esc(next)}'>${t("Done", "完成")}</a>`,
+      cancel: next,
+    }), opts.error ? 400 : 200);
   }
 
-  async function passwordPage(env: Env, csrf: string, error = ""): Promise<Response> {
-    const panel = `<form class='rs-panel' method='post' action='${CONSOLE}/password'>
-  <div class='rs-panel-h'><h2>${t("Change console password", "修改管理台密码")}</h2><p class='mio-note'>${t("Other signed-in browsers are signed out.", "修改后，其他已登录的浏览器会退出登录。")}</p></div>
+  async function passwordDialog(req: Request, env: Env, csrf: string, next: string, error = ""): Promise<Response> {
+    const body = `
   ${error ? `<div class='mio-dialog-err' role='alert'>${error}</div>` : ""}
   <input type='hidden' name='csrf' value='${esc(csrf)}'/>
+  <input type='hidden' name='back' value='${esc(next)}'/>
   <input type='text' name='username' value='${esc(adminUser(env))}' autocomplete='username' hidden readonly tabindex='-1' aria-hidden='true'/>
-  <label class='mio-field'><span>${t("Current password", "当前密码")}</span><input type='password' name='current' autocomplete='current-password' required/></label>
+  <label class='mio-field'><span>${t("Current password", "当前密码")}</span><input type='password' name='current' autocomplete='current-password' required autofocus/></label>
   <label class='mio-field'><span>${t("New password (at least 12 characters)", "新密码（至少 12 位）")}</span><input type='password' name='next' autocomplete='new-password' minlength='12' required/></label>
-  <label class='mio-field'><span>${t("Repeat new password", "再次输入新密码")}</span><input type='password' name='confirm' autocomplete='new-password' minlength='12' required/></label>
-  <div class='rs-actions'><button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Change password", "修改密码")}</button></div>
-</form>`;
-    return accountPage(env, "password", panel, error ? 400 : 200, "password");
+  <label class='mio-field'><span>${t("Repeat new password", "再次输入新密码")}</span><input type='password' name='confirm' autocomplete='new-password' minlength='12' required/></label>`;
+    return overPage(req, env, next, dialog({
+      icon: ICON_LOCK_KEY,
+      size: "sm",
+      title: t("Change console password", "修改管理台密码"),
+      desc: t("Other signed-in browsers are signed out.", "修改后，其他已登录的浏览器会退出登录。"),
+      body,
+      footer: `<a class='mio-btn mio-btn-secondary mio-btn-md' href='${esc(next)}'>${t("Cancel", "取消")}</a>
+    <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Change password", "修改密码")}</button>`,
+      cancel: next,
+      formAction: `${CONSOLE}/password`,
+    }), error ? 400 : 200);
   }
 
   type SettingsSection = "general" | "visibility" | "danger";
@@ -435,7 +473,7 @@ export function createConsole(deps: ConsoleDeps) {
         rw.on("#mh-edit", {
           element(e) {
             const href = e.getAttribute("data-href");
-            if (href && href.startsWith("/")) e.replace(`<a class='mio-btn mio-btn-secondary blob-edit' href='${CONSOLE}/edit${href.replace(/^\/([^/]+)\/edit/, "/$1").replace(/'/g, "%27")}'>${t("Edit", "编辑")}</a>`, { html: true });
+            if (href && href.startsWith("/")) e.replace(`<a class='mio-btn mio-btn-ghost mio-btn-xs mio-btn-icon blob-edit' href='${CONSOLE}/edit${href.replace(/^\/([^/]+)\/edit/, "/$1").replace(/'/g, "%27")}' title='Edit' data-zh-title='编辑' aria-label='Edit'>${ICON_PENCIL}</a>`, { html: true });
             else e.remove();
           },
         })
@@ -497,7 +535,9 @@ export function createConsole(deps: ConsoleDeps) {
     // signed-in console pages get the account menu in the top bar's account slot
     if (session && passHash && typeof HTMLRewriter !== "undefined" && (res.headers.get("content-type") ?? "").startsWith("text/html")) {
       // (route() answers every request that fails the Access check with plain text, so HTML here passed it)
-      const menu = accountMenu(env, await csrfToken(env, passHash, session));
+      const u = new URL(req.url);
+      const here = /^\/~mio\/(tokens|password)(\/|$)/.test(u.pathname) ? dialogNext(u.searchParams.get("next")) : dialogNext(u.pathname + u.search);
+      const menu = accountMenu(env, await csrfToken(env, passHash, session), here);
       const out = new HTMLRewriter().on("#mh-auth", { element(e) { e.replace(menu, { html: true }); } }).transform(res);
       res = new Response(out.body, out);
     }
@@ -585,6 +625,8 @@ export function createConsole(deps: ConsoleDeps) {
 
     // ---- tokens ----
     if (sub === "/tokens") {
+      const next = dialogNext(req.method === "GET" ? url.searchParams.get("next") : ((form?.get("next") as string | null) ?? null));
+      const tokensPage = (e: Env, c: string, o?: Parameters<typeof tokensDialog>[4]) => tokensDialog(req, e, c, next, o);
       if (req.method === "GET") return tokensPage(env, csrf);
       const name = String(form!.get("name") ?? "").trim();
       const role = String(form!.get("role") ?? "");
@@ -599,13 +641,17 @@ export function createConsole(deps: ConsoleDeps) {
     const rv = /^\/tokens\/([A-Za-z0-9_-]{1,40})\/revoke$/.exec(sub);
     if (rv) {
       const row = await registry.tokenById(rv[1]);
-      if (req.method === "GET") return row ? tokensPage(env, csrf, { revoke: row }) : redirect(`${CONSOLE}/tokens`);
+      const next = dialogNext(req.method === "GET" ? url.searchParams.get("next") : ((form?.get("next") as string | null) ?? null));
+      const back = `${CONSOLE}/tokens?next=${encodeURIComponent(next)}`;
+      if (req.method === "GET") return row ? tokensDialog(req, env, csrf, next, { revoke: row }) : redirect(back);
       if (row) await registry.revokeToken(row.id);
-      return redirect(`${CONSOLE}/tokens`);
+      return redirect(back);
     }
 
     // ---- password ----
     if (sub === "/password") {
+      const back = dialogNext(req.method === "GET" ? url.searchParams.get("next") : ((form?.get("back") as string | null) ?? null));
+      const passwordPage = (e: Env, c: string, err = "") => passwordDialog(req, e, c, back, err);
       if (req.method === "GET") return passwordPage(env, csrf);
       const cur = String(form!.get("current") ?? "");
       const next = String(form!.get("next") ?? "");
@@ -640,6 +686,8 @@ export function createConsole(deps: ConsoleDeps) {
       const rest = vw[2];
       if (!rest) return redirect(`${CONSOLE}/r/${repoUrl(name)}/${url.search}`);
       // pages only: git protocol, the JSON API and the editor have their own doors
+      const moved = req.method === "GET" ? deps.movedTab(rest) : null;
+      if (moved !== null) return new Response(null, { status: 301, headers: { location: `${CONSOLE}/r/${repoUrl(name)}${moved}${url.search}`, "cache-control": "no-store" } });
       if (/^\/(info\/refs|git-upload-pack|git-receive-pack)$/.test(rest) || rest.startsWith("/api/") || rest === "/edit" || rest.startsWith("/edit/")) return text("not found", 404);
       return viewer(req, env, name, rest, !!vinfo.priv);
     }

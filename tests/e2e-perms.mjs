@@ -135,6 +135,23 @@ try {
   const loginEntry = await fetch(`${BASE}/~mio/login`, { redirect: "manual", headers: H() });
   check(loginEntry.status === 200, "signed out: /~mio/login opens the sign-in page");
   check(!/<script>/.test(idxHtml), "no inline script on the index");
+
+  console.log("== repository page structure (GitHub-style, no duplicates)");
+  const ui_rp = await (await fetch(`${BASE}/mio-cli/`)).text();
+  const ui_tabs = /<nav class='mio-tabs'>([\s\S]*?)<\/nav>/.exec(ui_rp)?.[1] ?? "";
+  check((ui_tabs.match(/<a /g) || []).length === 3 && /data-zh='代码'/.test(ui_tabs) && /data-zh='提交'/.test(ui_tabs) && /data-zh='分支'/.test(ui_tabs), "public repository tabs: Code / Commits / Branches");
+  check(/class='repo-grid'/.test(ui_rp) && /class='repo-side'/.test(ui_rp) && (ui_rp.match(/data-copy='http/g) || []).length === 1 && !/class='mio-sub'/.test(ui_rp), "Code page: clone URL once (About sidebar), no description line under the title");
+  check(/<div class='gh-bar'><details class='mio-menu mio-ref'[\s\S]*?class='gh-counts'[\s\S]*?\/branches\/[\s\S]*?\/tags\/[\s\S]*?\/log\//.test(ui_rp), "counts row: branch picker, then branches · tags · commits");
+  for (const [from, to] of [["/mio-cli/about/", "/mio-cli/"], ["/mio-cli/summary/", "/mio-cli/"], ["/mio-cli/refs/", "/mio-cli/branches/"]]) {
+    const ui_mv = await fetch(`${BASE}${from}`, { redirect: "manual" });
+    check(ui_mv.status === 301 && ui_mv.headers.get("location") === to, `old tab ${from} -> 301 ${to}`);
+  }
+  const ui_tg = await (await fetch(`${BASE}/mio-cli/tags/`)).text();
+  check(/class='mio-seg mio-seg-links'/.test(ui_tg) && /href='\/mio-cli\/tags\/' aria-current='page'/.test(ui_tg) && /class='active' aria-current='page' href='\/mio-cli\/branches\/'/.test(ui_tg), "tags are a switch on the Branches tab");
+  const ui_lg = await (await fetch(`${BASE}/mio-cli/log/`)).text();
+  check(/class='cl-day'/.test(ui_lg) && /class='mio-btn-group cl-sha'/.test(ui_lg) && /data-copy='[0-9a-f]{40}'/.test(ui_lg), "commit list grouped by day, short sha with copy");
+  const ui_cm = await (await fetch(`${BASE}/mio-cli/commit/`)).text();
+  check(/class='mio-card cm-card'/.test(ui_cm) && /<details class='mio-card df-file'/.test(ui_cm) && !/class='commit-info'/.test(ui_cm) && !/diffstat/.test(ui_cm), "commit page: one header card + collapsible file diffs, no duplicate meta table / diffstat");
   const entry = await fetch(`${BASE}/~mio/`, { redirect: "manual", headers: H() });
   check(entry.status === 303 && entry.headers.get("location") === "/~mio/login?next=%2F~mio%2F", "signed-out click on the button -> /~mio/login?next=/~mio/");
 
@@ -183,7 +200,7 @@ try {
   const sph = await (await consoleGet("/~mio/repos/permtest")).text();
   check(!/data-dialog-layer/.test(sph) && /class='rs-page'/.test(sph) && /class='mio-tab-set active' href='\/~mio\/repos\/permtest' aria-current='page'/.test(sph), "settings is its own page (no dialog) with the Settings tab active");
   check(/href='\/~mio\/repos\/permtest\?s=general' aria-current='page'/.test(sph) && sph.includes("?s=visibility") && sph.includes("?s=danger"), "settings section nav: General / Visibility / Danger zone");
-  check(/href=["']\/~mio\/r\/permtest\/tree\//.test(sph) && !/href=["']\/permtest\//.test(sph), "settings page tab bar links stay under /~mio/r/permtest/");
+  check(/href=["']\/~mio\/r\/permtest\/["']/.test(sph) && /href=["']\/~mio\/r\/permtest\/log\//.test(sph) && !/href=["']\/permtest\//.test(sph), "settings page tab bar links stay under /~mio/r/permtest/");
   const vs = await (await consoleGet("/~mio/repos/permtest?s=visibility")).text();
   check(/name='private'/.test(vs) && /name='s' value='visibility'/.test(vs) && !/name='description'/.test(vs), "visibility section has only the private switch");
   check((await consolePost("/~mio/repos/permtest", { description: "x", private: "1" })).status === 403, "POST without CSRF -> 403");
@@ -218,7 +235,8 @@ try {
   check(pv.status === 200 && pvh.includes("a.txt"), "signed in: private repo page opens inside the console, no second login");
   check(/<nav class='mio-tabs'>[\s\S]*<a class='mio-tab-set' href='\/~mio\/repos\/permtest'>[\s\S]*<\/nav>/.test(pvh), "console repo page: Settings tab at the end of the tab bar -> /~mio/repos/permtest");
   check(/<\/h1><span class='mio-badge rl-priv-h'>/.test(pvh), "console repo page: Private badge next to the title");
-  check(/<div class='mio-refbar'><details class='mio-menu mio-ref' data-menu>/.test(pvh) && /href=["']\/~mio\/r\/permtest\/tree\/\?h=adminbranch["']/.test(pvh) && !/<select name='h'/.test(pvh) && !/<details/.test(/<nav class='mio-tabs'>([\s\S]*?)<\/nav>/.exec(pvh)?.[1] ?? "<details"), "branch switcher: GitHub-style menu below the tab bar (links, no select/submit)");
+  check((await consoleGet("/~mio/r/permtest/about/")).headers.get("location") === "/~mio/r/permtest/", "console viewer: old about tab -> 301 to the Code page");
+  check(/<div class='gh-bar'><details class='mio-menu mio-ref' data-menu>[\s\S]*?<div class='gh-counts'>/.test(pvh) && !/class='mio-refbar'/.test(pvh) && /href=["']\/~mio\/r\/permtest\/tree\/\?h=adminbranch["']/.test(pvh) && !/<select name='h'/.test(pvh) && !/<details/.test(/<nav class='mio-tabs'>([\s\S]*?)<\/nav>/.exec(pvh)?.[1] ?? "<details"), "branch switcher: first item of the counts row (branches · tags · commits), links, no select/submit, no separate ref bar");
   check(!/class='rl-set'/.test(both), "console list rows no longer carry a settings link");
   check(/<section class='mio-card st-panel'[\s\S]*<ul class='st-rings'>/.test(both) && (both.match(/class='st-ring-item/g) || []).length >= 2 && !/st-kpis|st-quota/.test(both), "storage card is one row of rings (DO / R2 …)");
   check(/href=["']\/~mio\/r\/permtest\/tree\//.test(pvh) && !/href=["']\/permtest\//.test(pvh), "in-repo links (tree/log/commits…) stay under /~mio/r/permtest/");
@@ -261,14 +279,19 @@ try {
   const list = await (await consoleGet("/~mio/tokens")).text();
   check(list.includes("hark-writer") && !list.includes(tokens["hark-writer"]), "token list shows names, never plaintext");
 
-  console.log("== account entry points + standalone token page");
+  console.log("== account entry points + token / password dialogs");
   const homeNow = await (await consoleGet("/~mio/")).text();
-  check(/<div class='mio-head-act'><a class='mio-btn mio-btn-secondary ad-tokens' href='\/~mio\/tokens'>/.test(homeNow), "console list page header has an Access tokens button");
-  check(/<details class='mio-menu mio-acct' data-menu>[\s\S]*href='\/~mio\/tokens'[\s\S]*href='\/~mio\/password'[\s\S]*action='\/~mio\/logout'[\s\S]*<\/details>/.test(homeNow) && !homeNow.includes("id='mh-auth'"), "top-bar account menu: tokens / password / sign out");
-  check(/<details class='mio-menu mio-acct'/.test(await (await consoleGet("/~mio/r/permtest/")).text()), "account menu on console repository pages too");
-  check(!/data-dialog-layer/.test(list) && /class='rs-page'/.test(list) && /href='\/~mio\/tokens' aria-current='page'/.test(list), "token page is a standalone page (no dialog) with the account nav");
+  check(!/ad-tokens/.test(homeNow) && !/class='mio-head-act'/.test(homeNow), "console list header has no separate Access tokens button");
+  check(/<details class='mio-menu mio-acct' data-menu>[\s\S]*href='\/~mio\/tokens\?next=%2F~mio%2F'[\s\S]*href='\/~mio\/password\?next=%2F~mio%2F'[\s\S]*action='\/~mio\/logout'[\s\S]*<\/details>/.test(homeNow) && !homeNow.includes("id='mh-auth'"), "top-bar account menu: tokens / password (dialogs, next = this page) / sign out");
+  const repoNow = await (await consoleGet("/~mio/r/permtest/")).text();
+  check(/<details class='mio-menu mio-acct'/.test(repoNow) && repoNow.includes("href='/~mio/tokens?next=%2F~mio%2Fr%2Fpermtest%2F'"), "account menu on console repository pages too (returns to that page)");
+  check(/data-dialog-layer/.test(list) && /class='mio-dialog mio-dialog-lg'/.test(list) && /<main id='cgit'[^>]*inert/.test(list) && /class='mio-dialog-b'/.test(list) && list.includes("st-panel"), "token page = dialog (lg, scrolling body) over the console list (inert behind)");
+  const overRepo = await (await consoleGet("/~mio/tokens?next=%2F~mio%2Fr%2Fpermtest%2F")).text();
+  check(/data-dialog-layer/.test(overRepo) && /class='gh-files'|class='list gh-files'/.test(overRepo) && /class='mio-backdrop' href='\/~mio\/r\/permtest\/'/.test(overRepo) && /name='next' value='\/~mio\/r\/permtest\/'/.test(overRepo), "token dialog opened from a repository page keeps that page behind; close / forms return there");
+  check(/data-cancel='\/~mio\/'/.test(await (await consoleGet("/~mio/tokens?next=%2F%2Fevil.example")).text()), "next=//evil -> dialog returns to the console home");
   check(/<select name='expires'>/.test(list) && /value='30' selected/.test(list) && ["7", "90", "365", "never"].every((v) => list.includes(`value='${v}'`)), "expiration choices 7/30/90/365 days/never, default 30");
-  check(!/data-dialog-layer/.test(await (await consoleGet("/~mio/password")).text()), "password page is standalone too");
+  const pwd = await (await consoleGet("/~mio/password?next=%2F~mio%2Fr%2Fpermtest%2F")).text();
+  check(/data-dialog-layer/.test(pwd) && /action='\/~mio\/password'/.test(pwd) && /name='back' value='\/~mio\/r\/permtest\/'/.test(pwd) && /name='csrf'/.test(pwd), "password page = dialog over the page it was opened from (CSRF, back)");
 
   console.log("== token expiry");
   const legacyRow = /<span data-noi18n>hark-reader<\/span>[\s\S]*?<td class='tk-t tk-e'>([\s\S]*?)<\/td>/.exec(list)?.[1] ?? "";
@@ -372,7 +395,7 @@ try {
   const id = new RegExp(`>hark-writer</span>[\\s\\S]*?/~mio/tokens/([A-Za-z0-9_-]+)/revoke`).exec(listHtml)?.[1];
   const confirm = await consoleGet(`/~mio/tokens/${id}/revoke`);
   const confirmHtml = await confirm.text();
-  check(confirm.status === 200 && confirmHtml.includes("hark-writer") && !/data-dialog-layer/.test(confirmHtml) && /class='rs-panel rs-danger'/.test(confirmHtml), "revoke confirmation (standalone page)");
+  check(confirm.status === 200 && confirmHtml.includes("hark-writer") && /data-dialog-layer/.test(confirmHtml) && /class='mio-dialog-icon is-danger'/.test(confirmHtml) && /mio-btn-danger-solid/.test(confirmHtml), "revoke confirmation (danger dialog)");
   check((await consolePost(`/~mio/tokens/${id}/revoke`, { csrf })).status === 303, "revoke");
   check(git(tmp, "ls-remote", url(W, "permtest")).code !== 0, "revoked writer token fails immediately");
   check(git(tmp, "ls-remote", url(R, "permtest")).code === 0, "other tokens unaffected");

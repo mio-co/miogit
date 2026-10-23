@@ -9,7 +9,7 @@
  */
 import type { Env } from "./env";
 import type { RepoInfo } from "./registry";
-import { esc, repoUrl, age, layout, htmlResponse, errorPage, t } from "./ui/html";
+import { esc, repoUrl, age, layout, htmlResponse, errorPage, t, emptyState } from "./ui/html";
 import { langColor } from "./ui/langs";
 import { CSS, APP_JS, UI_VER } from "./ui/mio";
 
@@ -20,7 +20,7 @@ import type { RepoCell } from "./repo";
 import { envTokens, hasHint, resolveToken, secretsEqual as secretsEqualImpl } from "./auth";
 import { roleAllows, type Principal } from "./policy";
 import { createConsole, CONSOLE } from "./admin";
-import { ICON_SIGN_IN, ICON_USER_CIRCLE } from "./ui/icons";
+import { ICON_PENCIL, ICON_REPO, ICON_SIGN_IN, ICON_USER_CIRCLE } from "./ui/icons";
 
 export { RepoCell } from "./repo";
 export { Registry } from "./registry";
@@ -273,11 +273,18 @@ function decorate(res: Response, url: URL, req: Request): Response {
       element(e) {
         const href = e.getAttribute("data-href");
         // data-href is "/<repo>/edit/<path>?h=..": the editor lives in the console
-        if (href && href.startsWith("/")) e.replace(`<a class='mio-btn mio-btn-secondary blob-edit' rel='nofollow' href='${CONSOLE}/edit${href.replace(/^\/([^/]+)\/edit/, "/$1").replace(/'/g, "%27")}'>${t("Edit", "编辑")}</a>`, { html: true });
+        if (href && href.startsWith("/")) e.replace(`<a class='mio-btn mio-btn-ghost mio-btn-xs mio-btn-icon blob-edit' rel='nofollow' href='${CONSOLE}/edit${href.replace(/^\/([^/]+)\/edit/, "/$1").replace(/'/g, "%27")}' title='Edit' data-zh-title='编辑' aria-label='Edit'>${ICON_PENCIL}</a>`, { html: true });
         else e.remove();
       },
     })
     .transform(res);
+}
+
+/** an old repository tab URL -> its page in the merged structure (null = not moved) */
+export function movedTab(sub: string): string | null {
+  if (sub === "/about" || sub === "/about/" || sub === "/summary" || sub === "/summary/") return "/";
+  if (sub === "/refs" || sub === "/refs/") return "/branches/";
+  return null;
 }
 
 function siteBase(env: Env) {
@@ -362,24 +369,27 @@ function statsPanel(repos: RepoInfo[], usage: DoUsage | null = null, linkBase = 
   const db = repos.reduce((a, r) => a + (r.db_bytes || 0), 0);
   const r2 = repos.reduce((a, r) => a + (r.r2_bytes || 0), 0);
   const priv = repos.filter((r) => r.priv).length;
+  // MioUI Stat card cells: label (secondary) on top, big tabular value + ring, "used / cap" below
   const ring = (key: string, label: string, used: number, cap: number, sub: string, full: string) => {
     const pct = Math.min(100, (used / cap) * 100);
     const arc = used > 0 ? Math.max(pct, 1.5) : 0;
     const tone = used >= cap ? " st-over" : pct >= 80 ? " st-warn" : "";
     return `<li class='st-ring-item${tone}' data-ring='${key}' title='${esc(full)}'>` +
+      `<span class='st-ring-k'>${label}</span>` +
+      `<span class='st-ring-row'><span class='st-ring-v'>${pctText(pct)}</span>` +
       `<svg class='st-ring' viewBox='0 0 36 36' role='img' aria-label='${esc(`${full} (${pctText(pct)})`)}'>` +
       `<circle class='st-ring-track' cx='18' cy='18' r='15' pathLength='100'/>` +
       (arc ? `<circle class='st-ring-val' cx='18' cy='18' r='15' pathLength='100' stroke-dasharray='${arc.toFixed(2)} 100'/>` : "") +
-      `</svg><span class='st-ring-t'><span class='st-ring-k'>${label}</span><span class='st-ring-v'>${pctText(pct)}<span class='st-ring-sub' data-noi18n>${sub}</span></span></span></li>`;
+      `</svg></span><span class='st-ring-sub' data-noi18n>${sub}</span></li>`;
   };
   const top = [...repos].sort((a, b) => (b.db_bytes + b.r2_bytes) - (a.db_bytes + a.r2_bytes)).slice(0, 5).filter((r) => r.db_bytes + r.r2_bytes > 0);
   const topRows = top.map((r) => `<li><a href='${linkBase}/${repoUrl(r.name)}/'>${esc(r.name)}</a><span class='st-num'>${fmtBytes(r.db_bytes + r.r2_bytes)}</span></li>`).join("");
   const rings =
-    ring("do", t("DO storage", "DO 存储"), db, FREE_DO_BYTES, fmtBytes(db), `Durable Objects ${fmtBytes(db)} / 5 GB`) +
-    ring("r2", t("R2 storage", "R2 存储"), r2, FREE_R2_BYTES, fmtBytes(r2), `R2 ${fmtBytes(r2)} / 10 GB`) +
+    ring("do", t("DO storage", "DO 存储"), db, FREE_DO_BYTES, `${fmtBytes(db)} / 5 GB`, `Durable Objects ${fmtBytes(db)} / 5 GB`) +
+    ring("r2", t("R2 storage", "R2 存储"), r2, FREE_R2_BYTES, `${fmtBytes(r2)} / 10 GB`, `R2 ${fmtBytes(r2)} / 10 GB`) +
     (usage
-      ? ring("write", t("Writes today", "今日写入"), usage.written, FREE_ROWS_WRITTEN, fmtRows(usage.written), `DO rows written today ${usage.written} / 100000`) +
-        ring("read", t("Reads today", "今日读取"), usage.read, FREE_ROWS_READ, fmtRows(usage.read), `DO rows read today ${usage.read} / 5000000`)
+      ? ring("write", t("Writes today", "今日写入"), usage.written, FREE_ROWS_WRITTEN, `${fmtRows(usage.written)} / 10 万`, `DO rows written today ${usage.written} / 100000`) +
+        ring("read", t("Reads today", "今日读取"), usage.read, FREE_ROWS_READ, `${fmtRows(usage.read)} / 500 万`, `DO rows read today ${usage.read} / 5000000`)
       : "");
   return `<section class='mio-card st-panel' aria-label='storage'>` +
     `<div class='st-head'><h2>${t("Storage", "存储")}<details class='st-help'><summary aria-label='详情 / Details' title='详情 / Details'>?</summary><div class='st-pop' role='note'>` +
@@ -400,7 +410,7 @@ function statsPanel(repos: RepoInfo[], usage: DoUsage | null = null, linkBase = 
     `<li>${t("Writes count per git object, so first imports of large histories may need several days.", "写入按 git 对象计，大仓库首次导入完整历史可能要分几天推。")}</li>` +
     `<li>${t("Each push is capped at 100 MB; push big repos branch by branch.", "单次推送上限 100 MB，大仓库按分支分批推。")}</li>` +
     `<li>${t("Storage: 5 GB in Durable Objects, 10 GB in R2.", "存储：Durable Objects 5 GB，R2 10 GB。")}</li>` +
-    `</ul></div></details></h2></div>` +
+    `</ul></div></details></h2><span class='st-total'>${t("Total used", "已用合计")} <b data-noi18n>${fmtBytes(db + r2)}</b></span></div>` +
     `<ul class='st-rings'>${rings}</ul>` +
     `</section>`;
 }
@@ -434,7 +444,7 @@ async function indexBody(env: Env, signedIn = false, settings = false): Promise<
     : "";
   const body = repos.length
     ? (signedIn ? statsPanel(repos, await doUsage(env), settings ? `${CONSOLE}/r` : "") : "") + `<div class='rl-bar'><span class='rl-count'>${t(`${repos.length} repositories`, `${repos.length} 个仓库`)}</span>${sortBar}</div><ul class='repo-list' id='repo-list'>${rows}</ul>`
-    : `<div class='mio-empty'>${t("No public repositories yet. Create one by pushing:", "还没有公开仓库，推送即可创建：")}<br/><code>git push https://&lt;this-host&gt;/myrepo.git main</code></div>`;
+    : emptyState({ icon: ICON_REPO, title: t("No repositories yet", "还没有仓库"), desc: t("Create one by pushing to a new name:", "推送到一个新名字即可创建："), extra: `<div class='mio-cmd'><pre data-noi18n>git push https://&lt;this-host&gt;/myrepo.git main</pre></div>` });
   return body;
 }
 
@@ -619,6 +629,7 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
     pathname: namespaced ? "/:owner/:name{.git}?{/*}?" : "/:name{.git}?{/*}?",
   });
   const console_ = createConsole({
+    movedTab,
     siteBase,
     indexBody,
     invalidate: (repo, origin) => {
@@ -742,6 +753,9 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
       }
       const { repo, sub } = parsed;
       const { op, isReceive, isProtocol, isApi, isAdmin } = classify(sub, req.method, url);
+      // old tabs merged into the new structure: about/summary -> Code, refs -> Branches (301, never 404)
+      const moved = ui && req.method === "GET" ? movedTab(sub) : null;
+      if (moved !== null) return new Response(null, { status: 301, headers: { location: `/${repoUrl(repo)}${moved}${moved.includes("?") ? "" : url.search}`, "cache-control": "no-cache" } });
       // the web editor moved into the console (/~mio/edit/<repo>/<path>)
       if (ui && (sub === "/edit" || sub.startsWith("/edit/"))) {
         if (req.method === "GET" && sub.startsWith("/edit/")) return redirect(`${CONSOLE}/edit/${repoUrl(repo)}${sub.slice(5)}${url.search}`);

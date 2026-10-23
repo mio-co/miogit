@@ -35,7 +35,8 @@ import { fromHex } from "./git/util";
 import { diffLines, toHunks, isBinary, Hunk, DiffOp } from "./git/diff";
 import { blame, BlameHistoryEntry } from "./git/blame";
 import { tarGz, zip, SnapshotFile } from "./git/snapshot";
-import { esc, repoUrl, repoBase, age, fmtDate, fmtDate2822, layout, htmlResponse, errorPage, LayoutOpts, t } from "./ui/html";
+import { esc, repoUrl, repoBase, age, fmtDate, fmtDate2822, layout, htmlResponse, errorPage, LayoutOpts, t, emptyState, breadcrumb } from "./ui/html";
+import { ICON_BOOK_OPEN, ICON_CARET_DOWN, ICON_CARET_LEFT, ICON_CARET_RIGHT, ICON_CHART_BAR, ICON_CODE, ICON_COPY, ICON_DATABASE, ICON_DOWNLOAD, ICON_FILE, ICON_FILE_CODE, ICON_FILE_TEXT, ICON_FOLDER, ICON_GIT_BRANCH, ICON_GIT_COMMIT, ICON_GIT_DIFF, ICON_HISTORY, ICON_IMAGE, ICON_LINK, ICON_PENCIL, ICON_REPO, ICON_SEARCH, ICON_TAG, ICON_X } from "./ui/icons";
 import { renderMarkdown } from "./ui/markdown";
 import { prePushReasons, postPushReason, atomicReasons, isRole, ZERO_OID as POLICY_ZERO, type Principal } from "./policy";
 import { highlightLines } from "./ui/highlight";
@@ -929,10 +930,10 @@ export class RepoCell extends DurableObject<Env> {
       siteDesc: this.env.SITE_DESC ?? "",
       title: `${repo} - ${tab}`,
       repo,
-      sub: this.store.getMeta("description") || "[no description]",
+      sub: this.store.getMeta("description") || "",
       tab,
       ref: ref ?? headBranch,
-      hasAbout: (await this.findReadme()) !== null,
+      headRef: headBranch,
       branches,
       // the summary page has no ?h=; switching a branch there opens that branch's files
       formAction: formAction ?? `/${repoUrl(repo)}/tree/`,
@@ -943,14 +944,17 @@ export class RepoCell extends DurableObject<Env> {
     const h = q.get("h") ?? undefined;
     if (path.startsWith("/api/")) return this.api(path, q);
     if (path === "/" || path === "") return this.summaryPage(repo, host, proto);
-    if (path === "/about/" || path === "/about") return this.aboutPage(repo, h);
+    // the README used to have its own "about" tab; it is on the Code page now
+    if (path === "/about/" || path === "/about") return this.summaryPage(repo, host, proto);
     if (path === "/log/" || path === "/log")
       return this.logPage(repo, h, parseInt(q.get("ofs") ?? "0", 10) || 0, {
         path: q.get("path") ? decodePath("/" + q.get("path")!) : undefined,
         qt: q.get("qt") ?? undefined,
         q: q.get("q") ?? undefined,
       });
-    if (path === "/refs/" || path === "/refs") return this.refsPage(repo);
+    if (path === "/refs/" || path === "/refs") return this.refsPage(repo, "branches");
+    if (path === "/branches/" || path === "/branches") return this.refsPage(repo, "branches");
+    if (path === "/tags/" || path === "/tags") return this.refsPage(repo, "tags");
     if (path === "/commit/" || path === "/commit") return this.commitPage(repo, q.get("id") ?? undefined, h);
     if (path === "/diff/" || path === "/diff")
       return this.diffPage(repo, q.get("id") ?? undefined, q.get("id2") ?? undefined, h, false);
@@ -1321,38 +1325,38 @@ export class RepoCell extends DurableObject<Env> {
     return { files, truncated };
   }
 
-  private renderDiffHtml(repo: string, files: FileDiff[], truncated: boolean): string {
-    let statRows = "";
-    let diffHtml = "";
+  private renderDiffHtml(repo: string, files: FileDiff[], truncated: boolean, actions = ""): string {
     let totalAdd = 0, totalDel = 0;
-    for (const f of files) {
+    const cards = files.map((f, i) => {
       totalAdd += f.add;
       totalDel += f.del;
       const status = !f.o
-        ? " (new)"
+        ? `<span class='mio-badge mio-badge-success'>${t("Added", "新增")}</span>`
         : !f.n
-          ? " (deleted)"
+          ? `<span class='mio-badge mio-badge-danger'>${t("Deleted", "删除")}</span>`
           : f.o.mode !== f.n.mode
-            ? ` <span class='modechange'>[mode ${f.o.mode} -&gt; ${f.n.mode}]</span>`
+            ? `<span class='mio-badge mio-badge-warning mono' data-noi18n>${f.o.mode} → ${f.n.mode}</span>`
             : "";
-      statRows += `<tr><td>${esc(f.path)}${status}</td><td class='add right'>+${f.add}</td><td class='del right'>-${f.del}</td></tr>`;
       let bodyHtml: string;
       if (f.kind === "binary") {
-        bodyHtml = `<div>Binary files differ</div>`;
+        bodyHtml = `<div class='df-note'>${t("Binary file not shown", "二进制文件，不显示差异")}</div>`;
       } else if (f.kind === "toolarge") {
-        bodyHtml = `<div>Diff skipped: file too large</div>`;
+        bodyHtml = `<div class='df-note'>${t("Diff skipped: file too large", "文件太大，已跳过差异")}</div>`;
+      } else if (!f.hunks.length) {
+        bodyHtml = `<div class='df-note'>${t("No content changes", "内容没有变化")}</div>`;
       } else {
-        bodyHtml = f.hunks.map((hk) => renderHunk(hk)).join("");
+        bodyHtml = `<div class='df-scroll'><table class='df'>${f.hunks.map((hk) => renderHunk(hk)).join("")}</table></div>`;
       }
-      diffHtml += `<div class='head'>diff --git a/${esc(f.path)} b/${esc(f.path)}</div>${bodyHtml}`;
-    }
-    return `
-<div class='diffstat-header'>Diffstat</div>
-<table class='diffstat'>
-${statRows || "<tr><td>(no changes)</td></tr>"}
-</table>
-<div class='diffstat-summary'>${files.length} file${files.length === 1 ? "" : "s"} changed, ${totalAdd} insertions(+), ${totalDel} deletions(-)${truncated ? " [diff truncated]" : ""}</div>
-<table class='diff'><tr><td>${diffHtml}</td></tr></table>`;
+      // collapsible per file (open by default; very long diffs start folded)
+      const open = files.length <= 20 && f.add + f.del <= 400;
+      return `<details class='mio-card df-file' id='diff-${i + 1}'${open ? " open" : ""}><summary class='df-h'>${ICON_CARET_RIGHT}` +
+        `<span class='df-stat'><span class='add'>+${f.add}</span><span class='del'>−${f.del}</span></span>` +
+        `<span class='df-path' data-noi18n>${esc(f.path)}</span>${status}</summary>${bodyHtml}</details>`;
+    }).join("");
+    const summary = `<div class='df-summary'><span>${t(`${files.length} file${files.length === 1 ? "" : "s"} changed`, `${files.length} 个文件变更`)}` +
+      ` <span class='add'>+${totalAdd}</span> <span class='del'>−${totalDel}</span>${truncated ? ` · ${t("diff truncated", "差异已截断")}` : ""}</span>` +
+      (actions ? `<div class='df-summary-act'>${actions}</div>` : "") + `</div>`;
+    return summary + (cards || emptyState({ icon: ICON_GIT_DIFF, title: t("No changes", "没有变更"), bare: true }));
   }
 
   private renderRawDiff(files: FileDiff[]): string {
@@ -1392,19 +1396,18 @@ ${statRows || "<tr><td>(no changes)</td></tr>"}
   }
 
 
-  private async aboutPage(repo: string, h: string | undefined): Promise<Response> {
-    const base = await this.base(repo, "about", h, `/${repoUrl(repo)}/about/`);
+  /** README card (GitHub: a "README" header, the rendered file below) */
+  private async readmeCard(repo: string, ref: string | undefined): Promise<string> {
     const readme = await this.findReadme();
-    if (!readme) return errorPage(base, "no readme found");
-    const obj = await this.store.get(readme.oid);
-    if (!obj) return errorPage(base, "missing readme blob");
-    const text = td.decode(obj.data);
+    if (!readme) return "";
+    const robj = await this.store.get(readme.oid);
+    if (!robj) return "";
+    const text = td.decode(robj.data);
     const lower = readme.name.toLowerCase();
-    const body =
-      lower.endsWith(".md") || lower.endsWith(".markdown")
-        ? `<div class='md'>${renderMarkdown(text, { repo, ref: h ?? base.ref })}</div>`
-        : `<pre>${esc(text)}</pre>`;
-    return htmlResponse(layout({ ...base, body }));
+    const inner = lower.endsWith(".md") || lower.endsWith(".markdown")
+      ? `<div class='md'>${renderMarkdown(text, { repo, ref })}</div>`
+      : `<pre class='gh-pre'>${esc(text)}</pre>`;
+    return `<section class='gh-card gh-readme' id='readme'><div class='gh-card-h'>${ICON_BOOK_OPEN}<span>README</span></div>${inner}</section>`;
   }
 
   private async summaryPage(repo: string, host: string, proto: string): Promise<Response> {
@@ -1412,126 +1415,109 @@ ${statRows || "<tr><td>(no changes)</td></tr>"}
     const branches = this.store.refs().filter((r) => r.name.startsWith("refs/heads/"));
     const tags = this.store.refs().filter((r) => r.name.startsWith("refs/tags/"));
     const r = `/${repoUrl(repo)}`;
+    const cloneUrl = `${esc(proto)}://${esc(host)}/${esc(repo)}.git`;
 
     if (!branches.length && !tags.length) {
+      const cmd = `git remote add origin ${cloneUrl}\ngit push -u origin main`;
       return htmlResponse(
         layout({
           ...base,
-          body:
-            `<div class='mio-empty'>${t("This repository is empty. Push something to get started:", "仓库还是空的，推送代码即可开始：")}<br/><code>git remote add origin ${esc(proto)}://${esc(host)}/${esc(repo)}.git && git push -u origin main</code></div>`,
+          switcher: false,
+          body: emptyState({
+            icon: ICON_REPO,
+            title: t("This repository is empty", "仓库还是空的"),
+            desc: t("Push an existing repository from the command line:", "在命令行推送已有仓库即可开始："),
+            extra: `<div class='mio-cmd'><pre data-noi18n>${cmd}</pre><button type='button' class='mio-btn mio-btn-ghost mio-btn-icon' data-copy='${cmd}' title='Copy' data-zh-title='复制' aria-label='Copy'>${ICON_COPY}</button></div>`,
+          }),
         })
       );
     }
 
-    const branchRows = (await Promise.all(branches
-      .slice(0, 10)
-      .map(async (b) => {
-        const name = b.name.slice(11);
-        const c = await this.peelToCommit(b.target);
-        if (!c) return "";
-        return `<tr><td><a href='${r}/log/?h=${encodeURIComponent(name)}'>${esc(name)}</a></td>` +
-          `<td><a href='${r}/commit/?id=${c.oid}'>${esc(c.commit.subject)}</a></td>` +
-          `<td>${esc(c.commit.author.name)}</td><td>${age(c.commit.committer.time)}</td></tr>`;
-      })))
-      .join("");
-
-    const tagRows = (await Promise.all(tags
-      .slice(0, 10)
-      .map(async (t) => {
-        const name = t.name.slice(10);
-        const obj = await this.store.get(t.target);
-        let when = 0;
-        let target = t.target;
-        if (obj?.type === "tag") {
-          const tag = parseTag(obj.data);
-          when = tag.tagger?.time ?? 0;
-          target = tag.object;
-        }
-        const c = await this.peelToCommit(target);
-        if (c && !when) when = c.commit.committer.time;
-        const snap = `<a href='${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${encodeURIComponent(name)}.tar.gz'>tar.gz</a> ` +
-          `<a href='${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${encodeURIComponent(name)}.zip'>zip</a>`;
-        return `<tr><td><a href='${r}/tag/?h=${encodeURIComponent(name)}'>${esc(name)}</a></td>` +
-          `<td><a href='${r}/commit/?id=${target}'>${esc(c?.commit.subject ?? "")}</a></td>` +
-          `<td>${esc(c?.commit.author.name ?? "")}</td><td>${age(when)}</td><td class='snapshots'>${snap}</td></tr>`;
-      })))
-      .join("");
-
     const headOid = this.store.resolveHead();
-    const recent = headOid ? (await this.walkLog(headOid, 0, 10)).entries : [];
-    const deco = await this.decorations(repo);
-    const logRows = recent
-      .map(
-        (e) =>
-          `<tr><td>${age(e.commit.committer.time)}</td>` +
-          `<td><a href='${r}/commit/?id=${e.oid}'>${esc(e.commit.subject)}</a>${deco.get(e.oid) ?? ""}</td>` +
-          `<td>${esc(e.commit.author.name)}</td></tr>`
-      )
-      .join("");
-
-    // GitHub-style summary: latest commit bar, file list, then README
     const ghHead = headOid ? await this.peelToCommit(headOid) : null;
     let fileRows = "";
     if (ghHead) {
       const rootObj = await this.store.get(ghHead.commit.tree);
-      if (rootObj?.type === "tree") {
-        const ents = parseTree(rootObj.data).sort((a, b) =>
-          (isTreeMode(a.mode) === isTreeMode(b.mode)) ? a.name.localeCompare(b.name) : (isTreeMode(a.mode) ? -1 : 1));
-        fileRows = ents.map((e) => {
-          const dir = isTreeMode(e.mode);
-          const gitlink = isGitlinkMode(e.mode);
-          const size = dir || gitlink ? "" : fmtSize(this.store.typeAndSize(e.oid)?.size ?? 0);
-          const link = gitlink
-            ? `${esc(e.name)} @ ${e.oid.slice(0, 10)}`
-            : `<a class='${dir ? "ls-dir" : "ls-blob"}' href='${r}/tree/${encodeURIComponent(e.name)}'>${esc(e.name)}</a>`;
-          return `<tr><td>${link}</td><td class='gh-size'>${size}</td></tr>`;
-        }).join("");
-      }
+      if (rootObj?.type === "tree") fileRows = this.fileRows(r, "", "", parseTree(rootObj.data), true);
     }
-    let readmeHtml = "";
-    const readme = await this.findReadme();
-    if (readme) {
-      const robj = await this.store.get(readme.oid);
-      if (robj) {
-        const text = td.decode(robj.data);
-        const lower = readme.name.toLowerCase();
-        const inner = lower.endsWith(".md") || lower.endsWith(".markdown")
-          ? `<div class='md'>${renderMarkdown(text, { repo, ref: base.ref })}</div>`
-          : `<pre class='gh-pre'>${esc(text)}</pre>`;
-        readmeHtml = `<div class='gh-card gh-readme'><div class='gh-card-h'><svg viewBox='0 0 256 256' aria-hidden='true'><path d='M32 56h64a32 32 0 0 1 32 32v112a24 24 0 0 0-24-24H32ZM224 56h-64a32 32 0 0 0-32 32v112a24 24 0 0 1 24-24h72Z' fill='none' stroke='currentColor' stroke-width='16' stroke-linejoin='round'/></svg>${esc(readme.name)}</div>${inner}</div>`;
-      }
-    }
-    const branchCount = branches.length;
     const commitCount = ghHead ? await this.countCommits(ghHead.oid) : 0;
     const commitLabel = commitCount > 1000 ? "1000+" : String(commitCount);
     const langs = ghHead ? await this.languages(ghHead.commit.tree) : [];
     const langHtml = langs.length
-      ? `<div class='gh-langs' data-noi18n><div class='gh-langs-h'>${t("Languages", "语言")}</div>` +
+      ? `<section class='side-sec gh-langs' data-noi18n><h2>${t("Languages", "语言")}</h2>` +
         `<div class='gh-langbar' role='img' aria-label='${esc(langs.map((l) => `${l.name} ${l.pct.toFixed(1)}%`).join(", "))}'>` +
         langs.map((l) => `<span style='width:${l.pct.toFixed(2)}%;background:${l.color}' title='${esc(l.name)} ${l.pct.toFixed(1)}%'></span>`).join("") +
         `</div><ul>` +
-        langs.map((l) => `<li><i style='background:${l.color}'></i><b>${esc(l.name)}</b>${l.pct.toFixed(1)}%</li>`).join("") +
-        `</ul></div>`
+        langs.map((l) => `<li><i style='background:${l.color}'></i><b>${esc(l.name)}</b><span>${l.pct.toFixed(1)}%</span></li>`).join("") +
+        `</ul></section>`
       : "";
-    const cloneUrl = `${esc(proto)}://${esc(host)}/${esc(repo)}.git`;
+    const readmeHtml = await this.readmeCard(repo, base.ref);
+    const headBranch = base.headRef ?? "";
+    const snapRef = encodeURIComponent(headBranch || (ghHead ? ghHead.oid.slice(0, 10) : ""));
+    const stem = `${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${snapRef}`;
+    // counts row next to the branch picker (GitHub: "2 Branches · 0 Tags", commits at the end)
+    const refExtra =
+      `<div class='gh-counts'>` +
+      `<a class='mio-refcount' href='${r}/branches/'>${ICON_GIT_BRANCH}<b>${branches.length}</b>${t(branches.length === 1 ? "branch" : "branches", "个分支")}</a>` +
+      `<a class='mio-refcount' href='${r}/tags/'>${ICON_TAG}<b>${tags.length}</b>${t(tags.length === 1 ? "tag" : "tags", "个标签")}</a>` +
+      `<a class='mio-refcount' href='${r}/log/'>${ICON_HISTORY}<b>${commitLabel}</b>${t(commitCount === 1 ? "commit" : "commits", "次提交")}</a></div>`;
+    const desc = base.sub;
+    let bytes = 0;
+    try { const b = this.storageBytes(); bytes = b.db + b.r2; } catch { /* optional */ }
+    // About sidebar: everything "about" the repository, each shown only here
+    const about =
+      `<section class='side-sec'><h2>${t("About", "简介")}</h2>` +
+      (desc ? `<p class='side-desc'>${esc(desc)}</p>` : `<p class='side-desc is-empty'>${t("No description provided.", "暂无描述。")}</p>`) +
+      `<ul class='side-links'>` +
+      (readmeHtml ? `<li><a href='#readme'>${ICON_BOOK_OPEN}<span>README</span></a></li>` : "") +
+      `<li><a href='${r}/stats/'>${ICON_CHART_BAR}${t("Activity", "活跃度")}</a></li>` +
+      (bytes ? `<li><span class='side-k'>${ICON_DATABASE}<span data-noi18n>${fmtSize(bytes)}</span></span></li>` : "") +
+      `</ul></section>` +
+      `<section class='side-sec'><h2>${t("Clone", "克隆")}</h2>` +
+      `<div class='mio-clone-field'><input type='text' readonly value='${cloneUrl}' aria-label='clone url' data-noi18n/>` +
+      `<button type='button' class='mio-btn mio-btn-ghost mio-btn-icon' data-copy='${cloneUrl}' title='Copy' data-zh-title='复制' aria-label='Copy'>${ICON_COPY}</button></div>` +
+      `<div class='side-dl'><a class='mio-btn mio-btn-secondary mio-btn-xs' href='${stem}.zip'>${ICON_DOWNLOAD}${t("Download ZIP", "下载 ZIP")}</a>` +
+      `<a class='mio-btn mio-btn-secondary mio-btn-xs' href='${stem}.tar.gz'>${ICON_DOWNLOAD}tar.gz</a></div></section>`;
+    const commitBar = ghHead
+      ? `<div class='gh-card-h gh-commit'><span class='who'>${esc(ghHead.commit.author.name)}</span>` +
+        `<a class='msg' href='${r}/commit/?id=${ghHead.oid}'>${esc(ghHead.commit.subject)}</a>` +
+        `<span class='gh-age'><a class='mono' href='${r}/commit/?id=${ghHead.oid}'>${ghHead.oid.slice(0, 7)}</a><span class='gh-dot' aria-hidden='true'>·</span>${age(ghHead.commit.committer.time)}</span></div>`
+      : "";
     const body = `
-<div class='gh'>
-<div class='gh-top'>
-  <div class='gh-meta'>
-    <a href='${r}/refs/'><b>${branchCount}</b>${t(branchCount === 1 ? "branch" : "branches", "个分支")}</a>
-    <a href='${r}/refs/'><b>${tags.length}</b>${t(tags.length === 1 ? "tag" : "tags", "个标签")}</a>
-    <a href='${r}/log/'><b>${commitLabel}</b>${t(commitCount === 1 ? "commit" : "commits", "次提交")}</a>
-  </div>
-  <div class='gh-clone'>${t("Clone", "克隆")}<input type='text' readonly value='${cloneUrl}' aria-label='clone url'/><button type='button' class='mio-btn' data-copy='${cloneUrl}'>${t("Copy", "复制")}</button></div>
-</div>
-<div class='gh-card'>
-${ghHead ? `<div class='gh-card-h gh-commit'><span class='who'>${esc(ghHead.commit.author.name)}</span><a class='msg' href='${r}/commit/?id=${ghHead.oid}'>${esc(ghHead.commit.subject)}</a><span class='gh-age'><a href='${r}/commit/?id=${ghHead.oid}'>${ghHead.oid.slice(0, 7)}</a>${age(ghHead.commit.committer.time)}</span></div>` : ""}
+<div class='repo-grid'>
+<div class='repo-main'>
+<!--gh-bar-->
+<section class='gh-card'>
+${commitBar}
 <table class='list gh-files'>${fileRows}</table>
-</div>
-${langHtml}
+</section>
 ${readmeHtml}
+</div>
+<aside class='repo-side'>
+${about}
+${langHtml}
+</aside>
 </div>`;
-    return htmlResponse(layout({ ...base, body }));
+    return htmlResponse(layout({ ...base, refExtra, body }));
+  }
+
+  /** file-list rows (GitHub file browser): icon + name, size; directories first */
+  private fileRows(r: string, prefix: string, q: string, entries: TreeEntry[], humanSize: boolean): string {
+    return [...entries]
+      .sort((a, b) => (isTreeMode(a.mode) === isTreeMode(b.mode) ? a.name.localeCompare(b.name) : isTreeMode(a.mode) ? -1 : 1))
+      .map((e) => {
+        const href = `${prefix ? prefix + "/" : ""}${encodeURIComponent(e.name)}`;
+        const dir = isTreeMode(e.mode);
+        const gitlink = isGitlinkMode(e.mode);
+        const bytes = dir || gitlink ? -1 : this.store.typeAndSize(e.oid)?.size ?? 0;
+        const size = bytes < 0 ? "" : humanSize ? fmtSize(bytes) : fmtSize(bytes);
+        const icon = dir ? ICON_FOLDER : gitlink ? ICON_LINK : /\.(png|jpe?g|gif|webp|avif|ico|svg)$/i.test(e.name) ? ICON_IMAGE : ICON_FILE;
+        const link = gitlink
+          ? `<span class='ls-sub'>${icon}<span>${esc(e.name)} @ <span class='mono'>${e.oid.slice(0, 7)}</span></span></span>`
+          : `<a class='${dir ? "ls-dir" : "ls-blob"}' href='${r}/tree/${href}${q}'>${icon}<span>${esc(e.name)}</span></a>`;
+        return `<tr><td data-noi18n>${link}</td><td class='gh-size'>${size}</td></tr>`;
+      })
+      .join("");
   }
 
   private async logPage(repo: string, h: string | undefined, ofs: number, filter: LogFilter): Promise<Response> {
@@ -1546,13 +1532,21 @@ ${readmeHtml}
     if (!rr) return errorPage(base, tip ? `bad ref: ${tip}` : "empty repository");
     const { entries, more } = await this.walkLog(rr.oid, ofs, LOG_PAGE, filter);
     const deco = await this.decorations(repo);
-    const rows = entries
-      .map(
-        (e) =>
-          `<tr><td>${age(e.commit.committer.time)}</td>` +
-          `<td><a href='${r}/commit/?id=${e.oid}'>${esc(e.commit.subject)}</a>${deco.get(e.oid) ?? ""}</td>` +
-          `<td>${esc(e.commit.author.name)}</td></tr>`
-      )
+    // GitHub commit list: grouped by day, one card per day
+    const groups: { day: string; rows: string[] }[] = [];
+    for (const e of entries) {
+      const day = new Date(e.commit.committer.time * 1000).toISOString().slice(0, 10);
+      if (!groups.length || groups[groups.length - 1].day !== day) groups.push({ day, rows: [] });
+      groups[groups.length - 1].rows.push(
+        `<li class='cl-row'><div class='cl-main'><a class='cl-subj' href='${r}/commit/?id=${e.oid}'>${esc(e.commit.subject)}</a>${deco.get(e.oid) ?? ""}` +
+          `<div class='cl-meta'><b data-noi18n>${esc(e.commit.author.name)}</b> ${t("committed", "提交于")} ${age(e.commit.committer.time)}</div></div>` +
+          `<div class='cl-act'><span class='mio-btn-group cl-sha'><a class='mio-btn mio-btn-secondary mio-btn-xs mono' href='${r}/commit/?id=${e.oid}' data-noi18n>${e.oid.slice(0, 7)}</a>` +
+          `<button type='button' class='mio-btn mio-btn-secondary mio-btn-xs mio-btn-icon' data-copy='${e.oid}' title='Copy full SHA' data-zh-title='复制完整 SHA' aria-label='Copy full SHA'>${ICON_COPY}</button></span>` +
+          `<a class='mio-btn mio-btn-ghost mio-btn-xs mio-btn-icon' href='${r}/tree/?h=${e.oid}' title='Browse the repository at this commit' data-zh-title='浏览此版本的文件' aria-label='Browse the repository at this commit'>${ICON_CODE}</a></div></li>`
+      );
+    }
+    const list = groups
+      .map((g) => `<section class='cl-day'><h2 class='cl-day-h'>${ICON_GIT_COMMIT}<span>${t(`Commits on ${g.day}`, `${g.day} 的提交`)}</span></h2><ul class='mio-card cl-list'>${g.rows.join("")}</ul></section>`)
       .join("");
     const params = new URLSearchParams();
     if (h) params.set("h", h);
@@ -1564,95 +1558,99 @@ ${readmeHtml}
       if (o > 0) p.set("ofs", String(o));
       return `?${p.toString()}`;
     };
-    const nav =
-      `<div style='margin-top:1em'>` +
-      (ofs > 0 ? `<a href='${link(Math.max(0, ofs - LOG_PAGE))}'>[prev]</a> ` : "") +
-      (more ? `<a href='${link(ofs + LOG_PAGE)}'>[next]</a>` : "") +
-      `</div>`;
-    const qt = filter.qt ?? "grep";
-    const searchForm =
-      `<form method='get' action='${r}/log/'>` +
-      (h ? `<input type='hidden' name='h' value='${esc(h)}'/>` : "") +
-      `<select name='qt'>` +
-      ["grep", "author", "committer", "range"]
-        .map((t) => `<option value='${t}'${t === qt ? " selected='selected'" : ""}>${t}</option>`)
-        .join("") +
-      `</select> <input type='text' name='q' size='30' value='${esc(filter.q ?? "")}'/> ` +
-      `<input type='submit' value='search'/></form>`;
-    const pathNote = filter.path?.length
-      ? `<div class='path'>path: ${esc(filter.path.join("/"))} (<a href='${r}/log/${h ? `?h=${encodeURIComponent(h)}` : ""}'>clear</a>)</div>`
+    const page = Math.floor(ofs / LOG_PAGE) + 1;
+    const nav = ofs > 0 || more
+      ? `<nav class='mio-pager' aria-label='Pagination'>` +
+        (ofs > 0 ? `<a class='mio-btn mio-btn-secondary' href='${link(Math.max(0, ofs - LOG_PAGE))}' rel='prev'>${ICON_CARET_LEFT}${t("Newer", "较新")}</a>` : `<span class='mio-btn mio-btn-secondary' aria-disabled='true'>${ICON_CARET_LEFT}${t("Newer", "较新")}</span>`) +
+        `<span class='mio-pager-n'>${t(`Page ${page}`, `第 ${page} 页`)}</span>` +
+        (more ? `<a class='mio-btn mio-btn-secondary' href='${link(ofs + LOG_PAGE)}' rel='next'>${t("Older", "较早")}${ICON_CARET_RIGHT}</a>` : `<span class='mio-btn mio-btn-secondary' aria-disabled='true'>${t("Older", "较早")}${ICON_CARET_RIGHT}</span>`) +
+        `</nav>`
       : "";
-    const body = `
-${searchForm}
-${pathNote}
-<table class='list nowrap'>
-<tr class='nohover'><th class='left'>Age</th><th class='left'>Commit message</th><th class='left'>Author</th></tr>
-${rows || "<tr class='nohover'><td colspan='3'>(no matching commits)</td></tr>"}
-</table>${nav}`;
+    const qt = filter.qt ?? "grep";
+    const qtLabel: Record<string, [string, string]> = { grep: ["Message", "提交信息"], author: ["Author", "作者"], committer: ["Committer", "提交者"], range: ["Range", "范围"] };
+    const searchForm =
+      `<form class='mio-toolbar' method='get' action='${r}/log/' role='search'>` +
+      (h ? `<input type='hidden' name='h' value='${esc(h)}'/>` : "") +
+      `<select name='qt' aria-label='Search in'>` +
+      ["grep", "author", "committer", "range"]
+        .map((k) => `<option value='${k}'${k === qt ? " selected='selected'" : ""} data-zh='${qtLabel[k][1]}'>${qtLabel[k][0]}</option>`)
+        .join("") +
+      `</select><label class='mio-input-group'>${ICON_SEARCH}<input type='search' name='q' value='${esc(filter.q ?? "")}' placeholder='Search commits' aria-label='Search commits'/></label>` +
+      `<button type='submit' class='mio-btn mio-btn-secondary'>${t("Search", "搜索")}</button></form>`;
+    const pathNote = filter.path?.length
+      ? `<div class='mio-chips'><span class='mio-chip'>${ICON_FILE}<span data-noi18n>${esc(filter.path.join("/"))}</span><a href='${r}/log/${h ? `?h=${encodeURIComponent(h)}` : ""}' title='Clear' data-zh-title='清除' aria-label='Clear'>${ICON_X}</a></span></div>`
+      : "";
+    const empty = emptyState({ icon: ICON_GIT_COMMIT, title: t("No matching commits", "没有匹配的提交"), desc: filter.q ? t("Try another search.", "换个关键词试试。") : undefined, bare: true });
+    const body = `${searchForm}${pathNote}${list || empty}${nav}`;
     return htmlResponse(layout({ ...base, body }));
   }
 
-  private async refsPage(repo: string): Promise<Response> {
+  /** GitHub Branches / Tags pages (the old combined "refs" page) */
+  private async refsPage(repo: string, kind: "branches" | "tags"): Promise<Response> {
     const r = `/${repoUrl(repo)}`;
-    const base = await this.base(repo, "refs", undefined, `${r}/refs/`);
+    const base = await this.base(repo, kind, undefined, `${r}/tree/`);
     const refs = this.store.refs();
-    const branches = refs.filter((x) => x.name.startsWith("refs/heads/"));
-    const tags = refs.filter((x) => x.name.startsWith("refs/tags/"));
-    const branchRows = (await Promise.all(branches
-      .map(async (b) => {
+    const snap = (name: string) =>
+      `<a class='mio-btn mio-btn-ghost mio-btn-xs' href='${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${encodeURIComponent(name)}.zip'>${ICON_DOWNLOAD}zip</a>` +
+      `<a class='mio-btn mio-btn-ghost mio-btn-xs' href='${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${encodeURIComponent(name)}.tar.gz'>${ICON_DOWNLOAD}tar.gz</a>`;
+    let rows = "";
+    let count = 0;
+    if (kind === "branches") {
+      const head = this.store.head();
+      const branches = refs.filter((x) => x.name.startsWith("refs/heads/"));
+      count = branches.length;
+      rows = (await Promise.all(branches.map(async (b) => {
         const name = b.name.slice(11);
         const c = await this.peelToCommit(b.target);
-        const snap = `<a href='${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${encodeURIComponent(name)}.tar.gz'>tar.gz</a> ` +
-          `<a href='${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${encodeURIComponent(name)}.zip'>zip</a>`;
-        return `<tr><td><a href='${r}/log/?h=${encodeURIComponent(name)}'>${esc(name)}</a></td>` +
-          `<td class='sha1'><a href='${r}/commit/?id=${b.target}'>${b.target.slice(0, 10)}</a></td>` +
-          `<td>${esc(c?.commit.author.name ?? "")}</td><td>${c ? age(c.commit.committer.time) : ""}</td><td class='snapshots'>${snap}</td></tr>`;
-      })))
-      .join("");
-    const tagRows = (await Promise.all(tags
-      .map(async (t) => {
-        const name = t.name.slice(10);
-        const obj = await this.store.get(t.target);
+        return `<li class='cl-row'><div class='cl-main'><a class='rf-name mono' href='${r}/tree/?h=${encodeURIComponent(name)}' data-noi18n>${ICON_GIT_BRANCH}<span>${esc(name)}</span></a>` +
+          (b.name === head ? `<span class='mio-badge mio-badge-accent'>${t("Default", "默认")}</span>` : "") +
+          `<div class='cl-meta'>${c ? `<a href='${r}/commit/?id=${c.oid}' data-noi18n>${esc(c.commit.subject)}</a> · <b data-noi18n>${esc(c.commit.author.name)}</b> ${age(c.commit.committer.time)}` : ""}</div></div>` +
+          `<div class='cl-act'><a class='mio-btn mio-btn-ghost mio-btn-xs' href='${r}/log/?h=${encodeURIComponent(name)}'>${ICON_HISTORY}${t("Commits", "提交")}</a>${snap(name)}</div></li>`;
+      }))).join("");
+    } else {
+      const tags = refs.filter((x) => x.name.startsWith("refs/tags/"));
+      count = tags.length;
+      const items = await Promise.all(tags.map(async (tg) => {
+        const name = tg.name.slice(10);
+        const obj = await this.store.get(tg.target);
         let when = 0;
-        let who = "";
-        let target = t.target;
+        let target = tg.target;
         if (obj?.type === "tag") {
           const tag = parseTag(obj.data);
           when = tag.tagger?.time ?? 0;
-          who = tag.tagger?.name ?? "";
           target = tag.object;
-        } else if (obj?.type === "commit") {
-          const c = parseCommit(obj.data);
-          when = c.committer.time;
-          who = c.author.name;
         }
-        const snap = `<a href='${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${encodeURIComponent(name)}.tar.gz'>tar.gz</a> ` +
-          `<a href='${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${encodeURIComponent(name)}.zip'>zip</a>`;
-        return `<tr><td><a href='${r}/tag/?h=${encodeURIComponent(name)}'>${esc(name)}</a></td>` +
-          `<td class='sha1'><a href='${r}/commit/?id=${target}'>${target.slice(0, 10)}</a></td>` +
-          `<td>${esc(who)}</td><td>${age(when)}</td><td class='snapshots'>${snap}</td></tr>`;
-      })))
-      .join("");
-    const body = `
-<table class='list nowrap'>
-<tr class='nohover'><th class='left' colspan='5'>Branch</th></tr>
-${branchRows || "<tr class='nohover'><td colspan='5'>none</td></tr>"}
-<tr class='nohover'><td colspan='5'>&nbsp;</td></tr>
-<tr class='nohover'><th class='left' colspan='5'>Tag</th></tr>
-${tagRows || "<tr class='nohover'><td colspan='5'>none</td></tr>"}
-</table>`;
+        const c = await this.peelToCommit(target);
+        if (c && !when) when = c.commit.committer.time;
+        return { when, html: `<li class='cl-row'><div class='cl-main'><a class='rf-name mono' href='${r}/tag/?h=${encodeURIComponent(name)}' data-noi18n>${ICON_TAG}<span>${esc(name)}</span></a>` +
+          `<div class='cl-meta'>${c ? `<a href='${r}/commit/?id=${c.oid}' data-noi18n>${esc(c.commit.subject)}</a> · ` : ""}${age(when)}${c ? ` · <a class='mono' href='${r}/commit/?id=${c.oid}' data-noi18n>${c.oid.slice(0, 7)}</a>` : ""}</div></div>` +
+          `<div class='cl-act'>${snap(name)}</div></li>` };
+      }));
+      rows = items.sort((a, b) => b.when - a.when).map((x) => x.html).join("");
+    }
+    const title = kind === "branches" ? t("Branches", "分支") : t("Tags", "标签");
+    const nBranches = refs.filter((x) => x.name.startsWith("refs/heads/")).length;
+    const nTags = refs.filter((x) => x.name.startsWith("refs/tags/")).length;
+    // Tags live on the Branches tab as a switch (one tab for every ref)
+    const sw = `<div class='mio-toolbar'><nav class='mio-seg mio-seg-links' aria-label='Refs'>` +
+      `<a href='${r}/branches/'${kind === "branches" ? " aria-current='page'" : ""}>${t("Branches", "分支")}<span class='mio-seg-n'>${nBranches}</span></a>` +
+      `<a href='${r}/tags/'${kind === "tags" ? " aria-current='page'" : ""}>${t("Tags", "标签")}<span class='mio-seg-n'>${nTags}</span></a></nav></div>`;
+    const body = sw + (rows
+      ? `<section class='gh-card'><div class='gh-card-h'><span>${title}</span><span class='mio-badge mio-badge-neutral'>${count}</span></div><ul class='cl-list is-flat'>${rows}</ul></section>`
+      : emptyState({ icon: kind === "branches" ? ICON_GIT_BRANCH : ICON_TAG, title: kind === "branches" ? t("No branches yet", "还没有分支") : t("No tags yet", "还没有标签"),
+          desc: kind === "tags" ? `<code data-noi18n>git tag v1.0 &amp;&amp; git push origin v1.0</code>` : undefined }));
     return htmlResponse(layout({ ...base, body }));
   }
 
   private pathBar(repo: string, h: string | undefined, path: string[]): string {
     const q = h ? `?h=${encodeURIComponent(h)}` : "";
-    let html = `path: <a href='/${repoUrl(repo)}/tree/${q}'>root</a>`;
+    const items: { label: string; href?: string; html?: boolean }[] = [{ label: `<span data-noi18n>${esc(repoBase(repo))}</span>`, html: true, href: `/${repoUrl(repo)}/tree/${q}` }];
     let acc = "";
     for (const seg of path) {
       acc += "/" + encodeURIComponent(seg);
-      html += `/<a href='/${repoUrl(repo)}/tree${acc}${q}'>${esc(seg)}</a>`;
+      items.push({ label: `<span data-noi18n>${esc(seg)}</span>`, html: true, href: `/${repoUrl(repo)}/tree${acc}${q}` });
     }
-    return html;
+    return breadcrumb(items);
   }
 
   private async treePage(repo: string, h: string | undefined, path: string[]): Promise<Response> {
@@ -1672,28 +1670,17 @@ ${tagRows || "<tr class='nohover'><td colspan='5'>none</td></tr>"}
 
     const q = h ? `?h=${encodeURIComponent(h)}` : "";
     const prefix = path.map(encodeURIComponent).join("/");
-    const rows = [...found.entries]
-      .sort((a, b) => (isTreeMode(a.mode) === isTreeMode(b.mode) ? a.name.localeCompare(b.name) : isTreeMode(a.mode) ? -1 : 1))
-      .map((e) => {
-        const href = `${prefix ? prefix + "/" : ""}${encodeURIComponent(e.name)}`;
-        const dir = isTreeMode(e.mode);
-        const gitlink = isGitlinkMode(e.mode);
-        const size = dir || gitlink ? "" : String(this.store.typeAndSize(e.oid)?.size ?? "");
-        const link = gitlink
-          ? `${esc(e.name)} @ ${e.oid.slice(0, 10)}`
-          : `<a class='${dir ? "ls-dir" : "ls-blob"}' href='${r}/tree/${href}${q}'>${esc(e.name)}</a>`;
-        const pathParam = [...path, e.name].map(encodeURIComponent).join("/");
-        const logLink = `<a href='${r}/log/?${h ? `h=${encodeURIComponent(h)}&` : ""}path=${pathParam}'>log</a>`;
-        const fileLinks = dir || gitlink ? "" : ` <a href='${r}/plain/${href}${q}'>plain</a> <a href='${r}/blame/${href}${q}'>blame</a>`;
-        return `<tr><td class='ls-mode'>${modeString(e.mode)}</td><td>${link}</td><td class='ls-size'>${size}</td>` +
-          `<td>${gitlink ? "" : logLink}${fileLinks}</td></tr>`;
-      })
-      .join("");
+    const up = path.length
+      ? `<tr><td><a class='ls-dir ls-up' href='${r}/tree/${path.slice(0, -1).map(encodeURIComponent).join("/")}${q}' title='Parent directory' data-zh-title='上级目录' aria-label='Parent directory'>${ICON_FOLDER}<span>..</span></a></td><td class='gh-size'></td></tr>`
+      : "";
+    const rows = up + this.fileRows(r, prefix, q, found.entries, true);
+    const historyHref = `${r}/log/?${h ? `h=${encodeURIComponent(h)}&` : ""}${path.length ? `path=${path.map(encodeURIComponent).join("/")}` : ""}`.replace(/[?&]$/, "");
     const body = `
-<table class='list'>
-<tr class='nohover'><th class='left'>Mode</th><th class='left'>Name</th><th class='right'>Size</th><th></th></tr>
-${rows}
-</table>`;
+<section class='gh-card'>
+<div class='gh-card-h'><span class='gh-count'>${t(`${found.entries.length} item${found.entries.length === 1 ? "" : "s"}`, `${found.entries.length} 项`)}</span>
+<a class='mio-btn mio-btn-ghost mio-btn-xs gh-history' href='${historyHref}'>${ICON_HISTORY}${t("History", "历史")}</a></div>
+<table class='list gh-files'>${rows}</table>
+</section>`;
     return htmlResponse(layout({ ...withPath, body }));
   }
 
@@ -1710,26 +1697,36 @@ ${rows}
     const q = h ? `?h=${encodeURIComponent(h)}` : "";
     const href = path.map(encodeURIComponent).join("/");
     const plainHref = `${r}/plain/${href}${q}`;
-    if (isBinary(obj.data)) {
-      const body = `<div>Binary file (${obj.data.length} bytes) &mdash; <a href='${plainHref}'>download</a></div>`;
-      return htmlResponse(layout({ ...base, body }));
-    }
     const name = path[path.length - 1] ?? "";
-    // Markdown reads like the README card (GitHub-style); plain keeps the source
-    if (/\.(md|markdown)$/i.test(name)) {
-      const body = `
-<div class='blob-info'>blob: ${entry.oid} (<a href='${plainHref}'>plain</a>) (<a href='${r}/blame/${href}${q}'>blame</a>)<span id='mh-edit' data-href='${r}/edit/${href}${q}'></span></div>
-<div class='md'>${renderMarkdown(td.decode(obj.data), { repo, ref: h ?? base.ref })}</div>`;
-      return htmlResponse(layout({ ...base, body }));
+    const isImage = /\.(png|jpe?g|gif|webp|avif|ico|svg)$/i.test(name);
+    const binary = isBinary(obj.data);
+    const lines = !binary ? td.decode(obj.data) : "";
+    const lineCount = lines ? lines.split("\n").length - (lines.endsWith("\n") ? 1 : 0) : 0;
+    const historyHref = `${r}/log/?${h ? `h=${encodeURIComponent(h)}&` : ""}path=${href}`;
+    const meta = `<span class='blob-meta'>${!binary ? `${t(`${lineCount} lines`, `${lineCount} 行`)}<span aria-hidden='true'>·</span>` : ""}<span data-noi18n>${fmtSize(obj.data.length)}</span></span>`;
+    const actions =
+      `<div class='mio-btn-group'>` +
+      `<a class='mio-btn mio-btn-secondary mio-btn-xs' href='${plainHref}'>${t("Raw", "原始")}</a>` +
+      (!binary ? `<a class='mio-btn mio-btn-secondary mio-btn-xs' href='${r}/blame/${href}${q}'>${t("Blame", "追溯")}</a>` : "") +
+      `<a class='mio-btn mio-btn-secondary mio-btn-xs' href='${historyHref}'>${t("History", "历史")}</a></div>` +
+      `<a class='mio-btn mio-btn-ghost mio-btn-xs mio-btn-icon' href='${plainHref}' download='${esc(name)}' title='Download' data-zh-title='下载' aria-label='Download'>${ICON_DOWNLOAD}</a>` +
+      (!binary ? `<span id='mh-edit' data-href='${r}/edit/${href}${q}'></span>` : "");
+    const head = `<div class='gh-card-h blob-info'>${meta}<div class='blob-act'>${actions}</div></div>`;
+    let inner: string;
+    if (isImage && (binary || /\.svg$/i.test(name))) {
+      inner = `<div class='blob-img'><img src='${plainHref}' alt='${esc(name)}'/></div>`;
+    } else if (binary) {
+      inner = emptyState({ icon: ICON_FILE, title: t("Binary file not shown", "二进制文件，无法预览"), desc: `<span data-noi18n>${fmtSize(obj.data.length)}</span>`, action: `<a class='mio-btn mio-btn-secondary mio-btn-md' href='${plainHref}' download='${esc(name)}'>${ICON_DOWNLOAD}${t("Download", "下载")}</a>`, bare: true });
+    } else if (/\.(md|markdown)$/i.test(name)) {
+      // Markdown reads like the README card (GitHub-style); Raw keeps the source
+      inner = `<div class='md'>${renderMarkdown(lines, { repo, ref: h ?? base.ref })}</div>`;
+    } else {
+      const hl = highlightLines(lines, name);
+      const nums = hl.map((_, i) => `<a id='n${i + 1}' href='#n${i + 1}'>${i + 1}</a>`).join("\n");
+      const code = hl.map((l) => l || " ").join("\n");
+      inner = `<div class='blob-scroll'><table class='blob'><tr><td class='linenumbers'><pre>${nums}</pre></td><td class='lines'><pre><code>${code}</code></pre></td></tr></table></div>`;
     }
-    const lines = highlightLines(td.decode(obj.data), name);
-    const nums = lines.map((_, i) => `<a id='n${i + 1}' href='#n${i + 1}'>${i + 1}</a>`).join("\n");
-    const code = lines.map((l) => l || " ").join("\n");
-    const body = `
-<div class='blob-info'>blob: ${entry.oid} (<a href='${plainHref}'>plain</a>) (<a href='${r}/blame/${href}${q}'>blame</a>)<span id='mh-edit' data-href='${r}/edit/${href}${q}'></span></div>
-<table class='blob'>
-<tr><td class='linenumbers'><pre>${nums}</pre></td><td class='lines'><pre><code>${code}</code></pre></td></tr>
-</table>`;
+    const body = `<section class='gh-card blob-card'>${head}${inner}</section>`;
     return htmlResponse(layout({ ...base, body }));
   }
 
@@ -1760,19 +1757,19 @@ ${rows}
     const href = path.map(encodeURIComponent).join("/");
     const back = `${r}/tree/${href}${h ? `?h=${encodeURIComponent(h)}` : ""}`;
     const body = `
-<form method='post' action='${r}/edit' class='ed-form' id='ed-form'>
+<form method='post' action='${r}/edit' class='ed-form gh-card' id='ed-form'>
 <input type='hidden' name='branch' value='${esc(branch)}'/>
 <input type='hidden' name='path' value='${esc(path.join("/"))}'/>
 <input type='hidden' name='base' value='${tip}'/>
-<div class='ed-head'><span class='ed-file'>${esc(path.join("/"))}</span><span class='mio-badge'>${esc(branch)}</span></div>
-<textarea name='content' class='ed-text' spellcheck='false' autocapitalize='off' autocomplete='off' wrap='off'>\n${esc(td.decode(obj.data))}</textarea>
+<div class='gh-card-h ed-head'>${ICON_PENCIL}<span class='ed-file' data-noi18n>${esc(path.join("/"))}</span><span class='mio-badge mio-badge-neutral mono' data-noi18n>${ICON_GIT_BRANCH}${esc(branch)}</span></div>
+<textarea name='content' class='ed-text' spellcheck='false' autocapitalize='off' autocomplete='off' wrap='off' aria-label='File content'>\n${esc(td.decode(obj.data))}</textarea>
 <div class='ed-commit'>
 <label class='mio-field'>${t("Commit message", "提交说明")}<input name='message' required maxlength='500' value='${esc(`更新 ${name}`)}'/></label>
-<div class='ed-actions'><a class='mio-btn mio-btn-ghost mio-btn-md' href='${back}'>${t("Cancel", "取消")}</a><button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Commit changes", "提交更改")}</button></div>
+<div class='ed-actions'><a class='mio-btn mio-btn-secondary mio-btn-md' href='${back}'>${t("Cancel", "取消")}</a><button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Commit changes", "提交更改")}</button></div>
 </div>
 </form>
 `;
-    const res = htmlResponse(layout({ ...base, pathBar: this.pathBar(repo, h, path), body }));
+    const res = htmlResponse(layout({ ...base, switcher: false, pathBar: this.pathBar(repo, h, path), body }));
     res.headers.set("cache-control", "private, no-store");
     return res;
   }
@@ -1900,12 +1897,15 @@ ${rows}
         numLines.push(String(k + 1));
         codeLines.push(esc(result[k].line) || " ");
       }
-      rows += `<tr><td class='sha1'><a href='${r}/commit/?id=${b.oid}'>${b.oid.slice(0, 8)}</a> ${esc(b.author)} ${age(b.time)}</td>` +
+      rows += `<tr><td class='sha1'><a class='mono' href='${r}/commit/?id=${b.oid}'>${b.oid.slice(0, 7)}</a><span class='bl-who' data-noi18n>${esc(b.author)}</span>${age(b.time)}</td>` +
         `<td class='linenumbers'><pre>${numLines.join("\n")}</pre></td>` +
         `<td class='lines'><pre>${codeLines.join("\n")}</pre></td></tr>`;
       i = j;
     }
-    const body = `<table class='blame blob'>${rows}</table>`;
+    const fileHref = `${r}/tree/${path.map(encodeURIComponent).join("/")}${h ? `?h=${encodeURIComponent(h)}` : ""}`;
+    const body = `<section class='gh-card blob-card'><div class='gh-card-h blob-info'><span class='blob-meta'>${t("Blame", "追溯")}<span aria-hidden='true'>·</span>${t(`${result.length} lines`, `${result.length} 行`)}</span>` +
+      `<div class='blob-act'><a class='mio-btn mio-btn-secondary mio-btn-xs' href='${fileHref}'>${ICON_FILE_CODE}${t("View file", "查看文件")}</a></div></div>` +
+      `<div class='blob-scroll'><table class='blame blob'>${rows}</table></div></section>`;
     return htmlResponse(layout({ ...withPath, body }));
   }
 
@@ -1941,19 +1941,28 @@ ${rows}
     const { files, truncated } = await this.computeDiff(parent?.tree ?? null, commit.tree);
     const deco = await this.decorations(repo);
 
+    const stem = `${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${oid.slice(0, 10)}`;
+    const msgBody = commit.message.split("\n").slice(1).join("\n").trim();
+    const sameCommitter = commit.committer.name === commit.author.name && commit.committer.email === commit.author.email;
+    const parents = commit.parents
+      .map((p) => `<a class='mono' href='?id=${p}'>${p.slice(0, 7)}</a>`)
+      .join(" + ");
     const body = `
-<table class='commit-info'>
-<tr><th>author</th><td>${esc(commit.author.name)} &lt;${esc(commit.author.email)}&gt;</td><td class='right'>${fmtDate(commit.author.time, commit.author.tz)}</td></tr>
-<tr><th>committer</th><td>${esc(commit.committer.name)} &lt;${esc(commit.committer.email)}&gt;</td><td class='right'>${fmtDate(commit.committer.time, commit.committer.tz)}</td></tr>
-<tr><th>commit</th><td colspan='2' class='sha1'>${oid} (<a href='${r}/patch/?id=${oid}'>patch</a>)</td></tr>
-<tr><th>tree</th><td colspan='2' class='sha1'><a href='${r}/tree/?h=${oid}'>${commit.tree}</a></td></tr>
-${commit.parents.map((p) => `<tr><th>parent</th><td colspan='2' class='sha1'><a href='?id=${p}'>${p}</a> (<a href='${r}/diff/?id=${oid}&id2=${p}'>diff</a>)</td></tr>`).join("")}
-<tr><th>download</th><td colspan='2' class='sha1'><a href='${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${oid.slice(0, 10)}.tar.gz'>${esc(repoBase(repo))}-${oid.slice(0, 10)}.tar.gz</a> <a href='${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${oid.slice(0, 10)}.zip'>zip</a></td></tr>
-</table>
-<div class='commit-subject'>${esc(commit.subject)}${deco.get(oid) ?? ""}</div>
-<div class='commit-msg'>${esc(commit.message.split("\n").slice(1).join("\n").trim())}</div>
-${this.renderDiffHtml(repo, files, truncated)}`;
-    return htmlResponse(layout({ ...base, body }));
+<section class='mio-card cm-card'>
+<div class='cm-head'><h2 class='cm-title' data-noi18n>${esc(commit.subject)}</h2>${deco.get(oid) ?? ""}
+<a class='mio-btn mio-btn-secondary mio-btn-xs cm-browse' href='${r}/tree/?h=${oid}'>${ICON_CODE}${t("Browse files", "浏览文件")}</a></div>
+${msgBody ? `<pre class='cm-body' data-noi18n>${esc(msgBody)}</pre>` : ""}
+<div class='cm-meta'>
+<span class='cm-who'><b data-noi18n title='${esc(commit.author.email)}'>${esc(commit.author.name)}</b> ${t("committed", "提交于")} <span title='${fmtDate(commit.author.time, commit.author.tz)}'>${age(commit.author.time)}</span>${sameCommitter ? "" : ` · ${t("committed by", "提交者")} <b data-noi18n title='${esc(commit.committer.email)}'>${esc(commit.committer.name)}</b>`}</span>
+<span class='cm-ids'>${commit.parents.length ? `<span>${t(commit.parents.length > 1 ? "parents" : "parent", "父提交")} ${parents}</span>` : ""}<span>${t("commit", "提交")} <code class='mono' data-noi18n>${oid.slice(0, 7)}</code></span><button type='button' class='mio-btn mio-btn-ghost mio-btn-xs mio-btn-icon' data-copy='${oid}' title='Copy full SHA' data-zh-title='复制完整 SHA' aria-label='Copy full SHA'>${ICON_COPY}</button></span>
+</div>
+</section>
+${this.renderDiffHtml(repo, files, truncated,
+  `<a class='mio-btn mio-btn-ghost mio-btn-xs' href='${r}/patch/?id=${oid}'>${ICON_FILE_TEXT}${t("Patch", "补丁")}</a>` +
+  `<a class='mio-btn mio-btn-ghost mio-btn-xs' href='${stem}.zip'>${ICON_DOWNLOAD}zip</a>` +
+  `<a class='mio-btn mio-btn-ghost mio-btn-xs' href='${stem}.tar.gz'>${ICON_DOWNLOAD}tar.gz</a>`)}`;
+    const pathBar = breadcrumb([{ label: t("Commits", "提交"), html: true, href: `${r}/log/` }, { label: `<span class='mono' data-noi18n>${oid.slice(0, 7)}</span>`, html: true }]);
+    return htmlResponse(layout({ ...base, switcher: false, pathBar, body }));
   }
 
   private async resolveCommitId(id: string | undefined, h: string | undefined): Promise<string | null> {
@@ -1984,9 +1993,9 @@ ${this.renderDiffHtml(repo, files, truncated)}`;
       return new Response(this.renderRawDiff(files), { headers: { "content-type": "text/plain; charset=utf-8" } });
     }
     const body = `
-<div class='commit-subject'>diff: ${oldOid ? `<a href='../commit/?id=${oldOid}'>${oldOid.slice(0, 10)}</a>` : "(root)"} .. <a href='../commit/?id=${newOid}'>${newOid.slice(0, 10)}</a></div>
-${this.renderDiffHtml(repo, files, truncated)}`;
-    return htmlResponse(layout({ ...base, body }));
+<section class='mio-card cm-card'><div class='cm-head'><h2 class='cm-title'>${ICON_GIT_DIFF}${t("Comparing", "比较")} ${oldOid ? `<a class='mono' href='../commit/?id=${oldOid}'>${oldOid.slice(0, 7)}</a>` : `<span class='mono'>(root)</span>`} … <a class='mono' href='../commit/?id=${newOid}'>${newOid.slice(0, 7)}</a></h2></div></section>
+${this.renderDiffHtml(repo, files, truncated, `<a class='mio-btn mio-btn-ghost mio-btn-xs' href='../rawdiff/?id=${newOid}${id2 ? `&amp;id2=${encodeURIComponent(id2)}` : ""}'>${ICON_FILE_TEXT}${t("Raw diff", "原始差异")}</a>`)}`;
+    return htmlResponse(layout({ ...base, switcher: false, pathBar: breadcrumb([{ label: t("Commits", "提交"), html: true, href: `/${repoUrl(repo)}/log/` }, { label: t("Compare", "比较"), html: true }]), body }));
   }
 
   /** git-format-patch style output, applies with `git am`. */
@@ -2028,25 +2037,28 @@ ${this.renderDiffHtml(repo, files, truncated)}`;
     if (!target) return errorPage(base, `tag not found: ${name}`);
     const obj = await this.store.get(target);
     if (!obj) return errorPage(base, `missing object`);
-    let body: string;
+    const stem = `${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${encodeURIComponent(name)}`;
+    const dl = `<a class='mio-btn mio-btn-ghost mio-btn-xs' href='${stem}.zip'>${ICON_DOWNLOAD}zip</a><a class='mio-btn mio-btn-ghost mio-btn-xs' href='${stem}.tar.gz'>${ICON_DOWNLOAD}tar.gz</a>`;
+    let head = "", meta = "", msg = "", objOid = target;
     if (obj.type === "tag") {
       const tag = parseTag(obj.data);
-      body = `
-<table class='commit-info'>
-<tr><th>tag name</th><td>${esc(tag.tag || name)}</td></tr>
-${tag.tagger ? `<tr><th>tag date</th><td>${fmtDate(tag.tagger.time, tag.tagger.tz)}</td></tr><tr><th>tagged by</th><td>${esc(tag.tagger.name)} &lt;${esc(tag.tagger.email)}&gt;</td></tr>` : ""}
-<tr><th>tagged object</th><td class='sha1'><a href='${r}/commit/?id=${tag.object}'>${tag.object}</a> (${esc(tag.type)})</td></tr>
-<tr><th>download</th><td class='sha1'><a href='${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${encodeURIComponent(name)}.tar.gz'>${esc(repoBase(repo))}-${esc(name)}.tar.gz</a> <a href='${r}/snapshot/${encodeURIComponent(repoBase(repo))}-${encodeURIComponent(name)}.zip'>zip</a></td></tr>
-</table>
-<div class='commit-msg'>${esc(tag.message.trim())}</div>`;
+      objOid = tag.object;
+      head = `<span class='mio-badge mio-badge-neutral'>${t("Annotated", "附注标签")}</span>`;
+      meta = tag.tagger ? `<span class='cm-who'><b data-noi18n title='${esc(tag.tagger.email)}'>${esc(tag.tagger.name)}</b> ${t("tagged", "标记于")} <span title='${fmtDate(tag.tagger.time, tag.tagger.tz)}'>${age(tag.tagger.time)}</span></span>` : "";
+      msg = tag.message.trim() ? `<pre class='cm-body' data-noi18n>${esc(tag.message.trim())}</pre>` : "";
+      name = tag.tag || name;
     } else {
-      body = `
-<table class='commit-info'>
-<tr><th>tag name</th><td>${esc(name)}</td></tr>
-<tr><th>tagged object</th><td class='sha1'><a href='${r}/commit/?id=${target}'>${target}</a> (lightweight)</td></tr>
-</table>`;
+      head = `<span class='mio-badge mio-badge-neutral'>${t("Lightweight", "轻量标签")}</span>`;
     }
-    return htmlResponse(layout({ ...base, body }));
+    const c = await this.peelToCommit(objOid);
+    const body = `
+<section class='mio-card cm-card'>
+<div class='cm-head'><h2 class='cm-title mono' data-noi18n>${ICON_TAG}${esc(name)}</h2>${head}</div>
+${msg}
+<div class='cm-meta'>${meta}<span class='cm-ids'><span>${t("commit", "提交")} <a class='mono' href='${r}/commit/?id=${c?.oid ?? objOid}' data-noi18n>${(c?.oid ?? objOid).slice(0, 7)}</a>${c ? ` <span class='cm-subj' data-noi18n>${esc(c.commit.subject)}</span>` : ""}</span></span></div>
+<div class='cm-foot'>${dl}</div>
+</section>`;
+    return htmlResponse(layout({ ...base, tab: "tag", pathBar: breadcrumb([{ label: t("Tags", "标签"), html: true, href: `${r}/tags/` }, { label: `<span class='mono' data-noi18n>${esc(name)}</span>`, html: true }]), body }));
   }
 
   private async snapshotPage(repo: string, filename: string): Promise<Response> {
@@ -2203,38 +2215,30 @@ ${items}
       .map((a) => ({ name: a.name, m: a.counts, total: Object.values(a.counts).reduce((x, y) => x + y, 0) }))
       .sort((a, b) => b.total - a.total)
       .slice(0, 20);
-    const periodLinks = [
-      ["w", "week"],
-      ["m", "month"],
-      ["q", "quarter"],
-      ["y", "year"],
-    ]
-      .map(([p, label]) =>
-        p === period
-          ? `<strong>${label}</strong>`
-          : `<a href='?${h ? `h=${encodeURIComponent(h)}&` : ""}period=${p}'>${label}</a>`
-      )
-      .join(" | ");
+    const periods: [string, string, string][] = [["w", "Week", "周"], ["m", "Month", "月"], ["q", "Quarter", "季度"], ["y", "Year", "年"]];
+    const periodLinks = `<nav class='mio-seg mio-seg-links' aria-label='Period'>` + periods
+      .map(([p, en, zh]) => `<a href='?${h ? `h=${encodeURIComponent(h)}&amp;` : ""}period=${p}'${p === period ? " aria-current='page'" : ""}>${t(en, zh)}</a>`)
+      .join("") + `</nav>`;
     const rows = authors
       .map(
         (a) =>
-          `<tr><td class='name'>${esc(a.name)}</td>` +
-          cols.map((k) => `<td>${a.m[k] ?? ""}</td>`).join("") +
-          `<td><strong>${a.total}</strong></td></tr>`
+          `<tr><td class='name' data-noi18n>${esc(a.name)}</td>` +
+          cols.map((k) => `<td class='num'>${a.m[k] ?? ""}</td>`).join("") +
+          `<td class='num'><b>${a.total}</b></td></tr>`
       )
       .join("");
     const totalRow =
-      `<tr><td class='name'><strong>Total</strong></td>` +
-      cols.map((k) => `<td><strong>${agg.totals[k] ?? 0}</strong></td>`).join("") +
-      `<td><strong>${agg.count}</strong></td></tr>`;
+      `<tr class='st-total'><td class='name'>${t("Total", "合计")}</td>` +
+      cols.map((k) => `<td class='num'>${agg.totals[k] ?? 0}</td>`).join("") +
+      `<td class='num'>${agg.count}</td></tr>`;
+    const unit = periods.find(([p]) => p === period) ?? periods[1];
     const body = `
-<div>Commits per author per ${period === "w" ? "week" : period === "y" ? "year" : period === "q" ? "quarter" : "month"} (${periodLinks})${agg.count >= MAX_STATS_SCAN ? ` &mdash; last ${MAX_STATS_SCAN} commits` : ""}</div>
-<table class='stats'>
-<tr><th>Author</th>${cols.map((k) => `<th>${esc(k)}</th>`).join("")}<th>Total</th></tr>
-${rows}
-${totalRow}
-</table>`;
-    return htmlResponse(layout({ ...base, body }));
+<div class='mio-toolbar'>${periodLinks}<span class='mio-note'>${t(`Commits per author per ${unit[1].toLowerCase()}`, `每位作者每${unit[2]}的提交数`)}${agg.count >= MAX_STATS_SCAN ? ` · ${t(`last ${MAX_STATS_SCAN} commits`, `最近 ${MAX_STATS_SCAN} 次提交`)}` : ""}</span></div>
+<section class='gh-card'><div class='tbl-scroll'><table class='list stats'>
+<thead><tr><th>${t("Author", "作者")}</th>${cols.map((k) => `<th class='num' data-noi18n>${esc(k)}</th>`).join("")}<th class='num'>${t("Total", "合计")}</th></tr></thead>
+<tbody>${rows}${totalRow}</tbody>
+</table></div></section>`;
+    return htmlResponse(layout({ ...base, pathBar: breadcrumb([{ label: t("Code", "代码"), html: true, href: `${r}/` }, { label: t("Activity", "活跃度"), html: true }]), body }));
   }
 }
 
@@ -2258,11 +2262,14 @@ function tooLargeResponse(maxBytes: number): Response {
 }
 
 function renderHunk(hk: Hunk): string {
-  let html = `<div class='hunk'>@@ -${hk.aStart},${hk.aLen} +${hk.bStart},${hk.bLen} @@</div>`;
+  let html = `<tr class='df-hunk'><td class='df-n' colspan='2'></td><td class='df-c'>@@ -${hk.aStart},${hk.aLen} +${hk.bStart},${hk.bLen} @@</td></tr>`;
+  let a = hk.aStart, b = hk.bStart;
   for (const op of hk.ops) {
     const cls = op.tag === "add" ? "add" : op.tag === "del" ? "del" : "ctx";
     const sign = op.tag === "add" ? "+" : op.tag === "del" ? "-" : " ";
-    html += `<div class='${cls}'>${sign}${esc(op.line) || " "}</div>`;
+    const na = op.tag === "add" ? "" : String(a++);
+    const nb = op.tag === "del" ? "" : String(b++);
+    html += `<tr class='df-${cls}'><td class='df-n'>${na}</td><td class='df-n'>${nb}</td><td class='df-c'><span class='df-sign'>${sign}</span>${esc(op.line) || " "}</td></tr>`;
   }
   return html;
 }
