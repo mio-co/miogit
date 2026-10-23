@@ -315,6 +315,16 @@ ul.repo-list li:hover{background:var(--cds-fill-ghost-hover)}
 .st-pop li+li{margin-top:3px}
 .st-over .st-bar i{background:var(--cds-fill-danger-solid)}
 .st-over .st-num{color:var(--cds-fill-danger-solid)}
+.blob-info{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px}
+.blob-edit{margin-left:auto;height:28px;padding:0 12px;font-size:12.5px}
+.content > form.ed-form{display:flex;flex-direction:column;flex-wrap:nowrap;align-items:stretch;gap:12px;text-align:left;padding:16px;box-shadow:none}
+.ed-head{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--cds-text-secondary)}
+.ed-file{font-family:var(--cds-font-mono,ui-monospace,monospace);color:var(--cds-text-primary);overflow-wrap:anywhere}
+.ed-text{width:100%;box-sizing:border-box;min-height:60vh;resize:vertical;font:13px/1.55 var(--cds-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);tab-size:4;color:var(--cds-text-primary);background:var(--cds-surface-3);border:0;border-radius:10px;box-shadow:inset 0 0 0 1px var(--cds-border);padding:12px 14px;white-space:pre;overflow:auto}
+.ed-text:hover{box-shadow:inset 0 0 0 1px var(--cds-border-strong)}
+.ed-text:focus-visible{outline:none;box-shadow:var(--cds-focus-shadow)}
+.ed-commit{display:flex;flex-direction:column;gap:10px}
+.ed-actions{display:flex;justify-content:flex-end;gap:8px}
 @media (max-width:640px){.st-panel{padding:14px}.st-top li{grid-template-columns:minmax(0,7rem) 1fr auto}}
 @media (max-width:640px){
   ul.repo-list li{grid-template-columns:minmax(0,1fr);grid-template-areas:"name" "desc" "meta";padding:12px 14px}
@@ -336,6 +346,15 @@ export const CSS = CDS_CSS + "\n" + APP_CSS;
 
 /** boot (theme/lang before paint) + toggles + client-side zh/en */
 export const APP_JS = String.raw`(function(){
+
+var ef=document.getElementById('ed-form');
+if(ef){var ta=ef.querySelector('textarea'),dirty=false,sent=false;
+ta.addEventListener('input',function(){dirty=true});
+ta.addEventListener('keydown',function(e){if(e.isComposing||e.keyCode===229)return;
+if(e.key==='Tab'&&!e.metaKey&&!e.ctrlKey&&!e.altKey&&!e.shiftKey){e.preventDefault();ta.setRangeText('\t',ta.selectionStart,ta.selectionEnd,'end');dirty=true}
+if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();ef.requestSubmit()}});
+ef.addEventListener('submit',function(){sent=true;var b=ef.querySelector('button[type=submit]');if(b)b.disabled=true});
+window.addEventListener('beforeunload',function(e){if(dirty&&!sent){e.preventDefault();e.returnValue=''}});}
 var d=document.documentElement,K='dgit-prefs',p={};
 try{p=JSON.parse(localStorage.getItem(K)||'{}')}catch(e){}
 var mq=window.matchMedia('(prefers-color-scheme: dark)');

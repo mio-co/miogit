@@ -29,7 +29,9 @@ import {
   isGitlinkMode,
   modeString,
   TreeEntry,
+  hashObject,
 } from "./git/objects";
+import { fromHex } from "./git/util";
 import { diffLines, toHunks, isBinary, Hunk, DiffOp } from "./git/diff";
 import { blame, BlameHistoryEntry } from "./git/blame";
 import { tarGz, zip, SnapshotFile } from "./git/snapshot";
@@ -237,6 +239,12 @@ export class RepoCell extends DurableObject<Env> {
         return this.receive(req, repo);
       }
 
+      if (path === "/edit" && req.method === "POST") {
+        return this.editCommit(req, repo);
+      }
+      if (path.startsWith("/edit/") && req.method === "GET") {
+        return this.editPage(repo, url.searchParams.get("h") ?? undefined, decodePath(path.slice("/edit".length)));
+      }
       if (path === "/config" && req.method === "PUT") {
         return this.handleConfig(await req.text());
       }
@@ -1651,7 +1659,7 @@ ${rows}
     // Markdown reads like the README card (GitHub-style); plain keeps the source
     if (/\.(md|markdown)$/i.test(name)) {
       const body = `
-<div>blob: ${entry.oid} (<a href='${plainHref}'>plain</a>) (<a href='${r}/blame/${href}${q}'>blame</a>)</div>
+<div class='blob-info'>blob: ${entry.oid} (<a href='${plainHref}'>plain</a>) (<a href='${r}/blame/${href}${q}'>blame</a>)<span id='mh-edit' data-href='${r}/edit/${href}${q}'></span></div>
 <div class='md'>${renderMarkdown(td.decode(obj.data), { repo, ref: h ?? base.ref })}</div>`;
       return htmlResponse(layout({ ...base, body }));
     }
@@ -1659,11 +1667,146 @@ ${rows}
     const nums = lines.map((_, i) => `<a id='n${i + 1}' href='#n${i + 1}'>${i + 1}</a>`).join("\n");
     const code = lines.map((l) => l || " ").join("\n");
     const body = `
-<div>blob: ${entry.oid} (<a href='${plainHref}'>plain</a>) (<a href='${r}/blame/${href}${q}'>blame</a>)</div>
+<div class='blob-info'>blob: ${entry.oid} (<a href='${plainHref}'>plain</a>) (<a href='${r}/blame/${href}${q}'>blame</a>)<span id='mh-edit' data-href='${r}/edit/${href}${q}'></span></div>
 <table class='blob'>
 <tr><td class='linenumbers'><pre>${nums}</pre></td><td class='lines'><pre><code>${code}</code></pre></td></tr>
 </table>`;
     return htmlResponse(layout({ ...base, body }));
+  }
+
+  /** The branch an edit targets: ?h= must name a branch; default is HEAD's branch. */
+  private editBranch(h?: string): string | null {
+    if (!h) {
+      const head = this.store.head();
+      return head.startsWith("refs/heads/") ? head.slice("refs/heads/".length) : null;
+    }
+    return this.store.getRef(`refs/heads/${h}`) ? h : null;
+  }
+
+  private async editPage(repo: string, h: string | undefined, path: string[]): Promise<Response> {
+    const r = `/${repoUrl(repo)}`;
+    const base = await this.base(repo, "tree", h, `${r}/tree/${path.map(encodeURIComponent).join("/")}`);
+    const branch = this.editBranch(h);
+    if (!branch) return errorPage(base, "只能编辑分支上的文件。");
+    const tip = this.store.getRef(`refs/heads/${branch}`)!;
+    const head = await this.peelToCommit(tip);
+    if (!head) return errorPage(base, "no commit found");
+    const found = await this.lookupPath(head.commit.tree, path);
+    if (!found || found.kind !== "blob") return errorPage(base, `path not found: ${path.join("/")}`);
+    const obj = await this.store.get(found.entry.oid);
+    if (!obj) return errorPage(base, "missing blob");
+    if (isBinary(obj.data)) return errorPage(base, "二进制文件不能在线编辑。");
+    if (obj.data.length > MAX_EDIT_BYTES) return errorPage(base, "文件太大，不能在线编辑。");
+    const name = path[path.length - 1] ?? "";
+    const href = path.map(encodeURIComponent).join("/");
+    const back = `${r}/tree/${href}${h ? `?h=${encodeURIComponent(h)}` : ""}`;
+    const body = `
+<form method='post' action='${r}/edit' class='ed-form' id='ed-form'>
+<input type='hidden' name='branch' value='${esc(branch)}'/>
+<input type='hidden' name='path' value='${esc(path.join("/"))}'/>
+<input type='hidden' name='base' value='${tip}'/>
+<div class='ed-head'><span class='ed-file'>${esc(path.join("/"))}</span><span class='mio-badge'>${esc(branch)}</span></div>
+<textarea name='content' class='ed-text' spellcheck='false' autocapitalize='off' autocomplete='off' wrap='off'>\n${esc(td.decode(obj.data))}</textarea>
+<div class='ed-commit'>
+<label class='mio-field'>${t("Commit message", "提交说明")}<input name='message' required maxlength='500' value='${esc(`更新 ${name}`)}'/></label>
+<div class='ed-actions'><a class='mio-btn mio-btn-ghost mio-btn-md' href='${back}'>${t("Cancel", "取消")}</a><button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Commit changes", "提交更改")}</button></div>
+</div>
+</form>
+`;
+    const res = htmlResponse(layout({ ...base, pathBar: this.pathBar(repo, h, path), body }));
+    res.headers.set("cache-control", "private, no-store");
+    return res;
+  }
+
+  /** Commit one file's new contents onto a branch (serialized with pushes). */
+  private editCommit(req: Request, repo: string): Promise<Response> {
+    const run = this.receiveChain.then(() => this.applyEdit(req, repo));
+    this.receiveChain = run.then(() => {}, () => {});
+    return run;
+  }
+
+  private async applyEdit(req: Request, repo: string): Promise<Response> {
+    const r = `/${repoUrl(repo)}`;
+    const form = await req.formData();
+    const branch = String(form.get("branch") ?? "");
+    const filePath = String(form.get("path") ?? "");
+    const baseOid = String(form.get("base") ?? "");
+    let content = String(form.get("content") ?? "");
+    const message = String(form.get("message") ?? "").trim().slice(0, 500);
+    const base = await this.base(repo, "tree");
+    const parts = filePath.split("/").filter(Boolean);
+    if (!branch || !parts.length || !isOid(baseOid) || !message) return errorPage(base, "bad edit request", 400);
+    const refName = `refs/heads/${branch}`;
+    const tip = this.store.getRef(refName);
+    if (!tip) return errorPage(base, `no such branch: ${branch}`, 404);
+    const href = parts.map(encodeURIComponent).join("/");
+    const back = `${r}/tree/${href}?h=${encodeURIComponent(branch)}`;
+    if (tip !== baseOid) {
+      return errorPage(base, "编辑期间分支已有新提交，请重新打开文件再改一次。", 409);
+    }
+    const commitObj = await this.store.get(tip);
+    if (!commitObj || commitObj.type !== "commit") return errorPage(base, "branch tip is not a commit", 409);
+    const commit = parseCommit(commitObj.data);
+
+    const orig = await this.lookupPath(commit.tree, parts);
+    if (!orig || orig.kind !== "blob") return errorPage(base, `path not found: ${filePath}`, 404);
+    const origObj = await this.store.get(orig.entry.oid);
+    const origText = origObj ? td.decode(origObj.data) : "";
+    // browsers submit textarea text with CRLF: keep the file's own line endings
+    if (!origText.includes("\r\n")) content = content.replace(/\r\n/g, "\n");
+    const blob = te.encode(content);
+    if (blob.length > MAX_EDIT_BYTES) return errorPage(base, "file too large", 413);
+
+    // build the new objects bottom-up, writing nothing until all are known
+    const pending: { oid: string; type: "blob" | "tree" | "commit"; data: Uint8Array }[] = [];
+    const blobOid = hashObject("blob", blob);
+    if (blobOid === orig.entry.oid) return new Response(null, { status: 204, headers: { "x-location": back } });
+    pending.push({ oid: blobOid, type: "blob", data: blob });
+    const rewrite = async (treeOid: string, depth: number): Promise<string | null> => {
+      const tobj = await this.store.get(treeOid);
+      if (!tobj || tobj.type !== "tree") return null;
+      const entries = parseTree(tobj.data);
+      const i = entries.findIndex((e) => e.name === parts[depth]);
+      if (i < 0) return null;
+      const e = entries[i];
+      if (depth === parts.length - 1) {
+        if (isTreeMode(e.mode) || isGitlinkMode(e.mode)) return null;
+        entries[i] = { ...e, oid: blobOid };
+      } else {
+        if (!isTreeMode(e.mode)) return null;
+        const sub = await rewrite(e.oid, depth + 1);
+        if (!sub) return null;
+        entries[i] = { ...e, oid: sub };
+      }
+      const data = encodeTree(entries);
+      const oid = hashObject("tree", data);
+      pending.push({ oid, type: "tree", data });
+      return oid;
+    };
+    const newTree = await rewrite(commit.tree, 0);
+    if (!newTree) return errorPage(base, `path not found: ${filePath}`, 404);
+    const name = this.env.EDIT_AUTHOR_NAME ?? "mio";
+    const email = this.env.EDIT_AUTHOR_EMAIL ?? "qiankuishe@gmail.com";
+    const tz = this.env.EDIT_TZ ?? "+0800";
+    const now = Math.floor(Date.now() / 1000);
+    const who = `${name} <${email}> ${now} ${tz}`;
+    const commitData = te.encode(`tree ${newTree}\nparent ${tip}\nauthor ${who}\ncommitter ${who}\n\n${message.replace(/\r\n/g, "\n")}\n`);
+    const newCommit = hashObject("commit", commitData);
+    pending.push({ oid: newCommit, type: "commit", data: commitData });
+
+    this.ctx.storage.transactionSync(() => {
+      for (const o of pending) if (!this.store.has(o.oid)) this.store.put(o.oid, o.type, o.data);
+      this.store.setRef(refName, newCommit);
+      this.store.invalidateReachable();
+    });
+
+    // 204 + x-location, not a 303: the Worker's stub.fetch would follow a redirect
+    const headers = new Headers({ "x-location": back, "cache-control": "no-store" });
+    headers.set("x-changed", "1");
+    headers.set("x-commit-time", String(now * 1000));
+    headers.set("x-main-lang", await this.mainLang().catch(() => ""));
+    try { headers.set("x-store-bytes", JSON.stringify(this.storageBytes())); } catch { /* optional */ }
+    return new Response(null, { status: 204, headers });
   }
 
   private async blamePage(repo: string, h: string | undefined, path: string[]): Promise<Response> {
@@ -2106,6 +2249,18 @@ function decodePath(p: string): string[] {
     .map((s) => decodeURIComponent(s))
     .filter((s) => s !== "." && s !== "..");
 }
+
+/** Serialize tree entries (kept in their existing, already-sorted order). */
+function encodeTree(entries: TreeEntry[]): Uint8Array {
+  const parts: Uint8Array[] = [];
+  for (const e of entries) {
+    parts.push(te.encode(`${e.mode} ${e.name}\0`));
+    parts.push(fromHex(e.oid));
+  }
+  return concat(parts);
+}
+
+const MAX_EDIT_BYTES = 1024 * 1024;
 
 function fmtSize(n: number): string {
   if (n < 1024) return `${n} B`;

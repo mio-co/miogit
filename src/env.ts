@@ -26,6 +26,10 @@ export interface Env {
   CF_ANALYTICS_TOKEN?: string;
   /** Cloudflare account id the analytics query targets */
   CF_ACCOUNT_ID?: string;
+  /** author identity and timezone for commits made in the web editor */
+  EDIT_AUTHOR_NAME?: string;
+  EDIT_AUTHOR_EMAIL?: string;
+  EDIT_TZ?: string;
   SITE_NAME?: string;
   SITE_DESC?: string;
   SITE_OWNER?: string;

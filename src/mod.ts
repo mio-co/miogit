@@ -351,7 +351,16 @@ function decorate(res: Response, signedIn: boolean, url: URL): Response {
     : url.pathname === "/login" ? "" : `<a class='mio-btn mio-btn-ghost mio-auth' href='/login?next=${next}'>${t("Sign in", "登录")}</a>`;
   let out: Response;
   if (typeof HTMLRewriter !== "undefined") {
-    out = new HTMLRewriter().on("#mh-auth", { element(e) { e.replace(html, { html: true }); } }).transform(res);
+    out = new HTMLRewriter()
+      .on("#mh-auth", { element(e) { e.replace(html, { html: true }); } })
+      .on("#mh-edit", {
+        element(e) {
+          const href = e.getAttribute("data-href");
+          if (signedIn && href) e.replace(`<a class='mio-btn mio-btn-secondary blob-edit' href='${href.replace(/'/g, "%27")}'>${t("Edit", "编辑")}</a>`, { html: true });
+          else e.remove();
+        },
+      })
+      .transform(res);
   } else {
     out = new Response(res.body, res);
   }
@@ -443,7 +452,7 @@ function statsPanel(repos: RepoInfo[], usage: DoUsage | null = null): string {
     return `<li><a href='/${repoUrl(r.name)}/'>${esc(r.name)}</a><span class='st-mini'><i style='width:${((n / max) * 100).toFixed(1)}%'></i></span><span class='st-num'>${fmtBytes(n)}</span></li>`;
   }).join("");
   return `<section class='mio-card st-panel' aria-label='storage'>` +
-    `<div class='st-head'><h2>${t("Storage", "存储空间")}<details class='st-help'><summary aria-label='${t("Notes", "注意事项")}'>?</summary><div class='st-pop' role='note'>` +
+    `<div class='st-head'><h2>${t("Storage", "存储空间")}<details class='st-help'><summary aria-label='注意事项 / Notes' title='注意事项 / Notes'>?</summary><div class='st-pop' role='note'>` +
     `<b>${t("Free plan limits", "免费版额度")}</b><ul>` +
     `<li>${t("Durable Objects: 5M rows read and 100K rows written per day.", "Durable Objects 每天最多读 500 万行、写 10 万行。")}</li>` +
     `<li>${t("Resets daily at 00:00 UTC (08:00 Beijing).", "每天 UTC 0 点（北京时间 8 点）重置。")}</li>` +
@@ -762,6 +771,24 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
       }
       const { repo, sub } = parsed;
       const { op, isReceive, isProtocol, isApi, isAdmin } = classify(sub, req.method, url);
+      // web editor: signed-in browsers only, same-origin posts only
+      const isEdit = ui && (sub === "/edit" || sub.startsWith("/edit/"));
+      if (isEdit) {
+        if (req.method !== "GET" && req.method !== "POST") return new Response("method not allowed\n", { status: 405 });
+        if (req.method === "GET" && sub === "/edit") return new Response("not found\n", { status: 404 });
+        if (!signedIn) {
+          return req.method === "GET"
+            ? redirect(`/login?next=${encodeURIComponent(path + url.search)}`)
+            : new Response("sign in required\n", { status: 401 });
+        }
+        if (req.method === "POST") {
+          const origin = req.headers.get("origin");
+          const site = req.headers.get("sec-fetch-site");
+          if ((origin && new URL(origin).host !== url.host) || (!origin && site && site !== "same-origin")) {
+            return new Response("cross-site edit refused\n", { status: 403 });
+          }
+        }
+      }
 
       const registry = env.REGISTRY.getByName("registry");
 
@@ -788,7 +815,7 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
         env,
       });
       const pageRead = op === "read" && !isProtocol && !isApi;
-      if (decision !== true && pageRead && signedIn) {
+      if (decision !== true && (pageRead || isEdit) && signedIn) {
         // a signed-in browser may read any repository page
       } else if (decision instanceof Response) {
         if (pageRead && decision.status === 401 && !req.headers.has("authorization")) return redirect(`/login?next=${encodeURIComponent(path + url.search)}`);
@@ -808,6 +835,7 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
         cache !== null &&
         req.method === "GET" &&
         !isProtocol &&
+        !isEdit &&
         info !== null &&
         !info.priv &&
         !req.headers.has("authorization");
@@ -897,6 +925,20 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
             })
           );
         }
+      }
+      if (isEdit && req.method === "POST" && res.headers.has("x-location")) {
+        if (res.headers.get("x-changed") === "1") {
+          const idle = parseInt(res.headers.get("x-commit-time") ?? "", 10) || Date.now();
+          try {
+            await registry.upsert(repo, idle, res.headers.get("x-main-lang") ?? undefined);
+            const sb = parseStoreBytes(res);
+            if (sb) await registry.setBytes(repo, sb);
+          } catch {
+            // registry deferred
+          }
+          infoMemo.delete(repo);
+        }
+        return new Response(null, { status: 303, headers: { location: res.headers.get("x-location")!, "cache-control": "no-store" } });
       }
       if (res.ok && (sub === "/config" || sub === "/description") && req.method === "PUT") {
         try {
