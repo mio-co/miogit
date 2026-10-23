@@ -576,10 +576,14 @@ export class RepoCell extends DurableObject<Env> {
   }
 
   /** The content methods over HTTP. GET-only; routed from ui(). */
-  private async api(path: string, q: URLSearchParams): Promise<Response> {
+  private async api(path: string, q: URLSearchParams, repo = "repo", host = "", proto = "https"): Promise<Response> {
     const h = q.get("h") ?? undefined;
     const json = (data: unknown, status = 200) =>
       Response.json(data, { status, headers: { "x-content-type-options": "nosniff" } });
+    if (path === "/api/view" || path.startsWith("/api/view/")) {
+      const v = await this.view(repo, host, proto, path.slice("/api/view".length) || "/", q);
+      return json(v.body, v.status);
+    }
     const notFound = (what: string) => json({ error: what }, 404);
     if (path === "/api/refs") return json(await this.listRefs());
     if (path === "/api/log") {
@@ -918,6 +922,245 @@ export class RepoCell extends DurableObject<Env> {
   }
 
 
+  // ---- page view models for the React frontend (GET /api/view<page sub-path>) ----
+  // Each one mirrors a server-rendered page: same lookups, same limits, same
+  // escaping (README markdown and highlighted code come back as server-rendered,
+  // sanitized HTML strings). The Worker's authorize gate runs before any of these.
+
+  private personJson(p: Person) {
+    return { name: p.name, email: p.email, time: p.time, tz: p.tz };
+  }
+
+  private briefCommit(oid: string, c: Commit) {
+    return { oid, subject: c.subject, author: c.author.name, time: c.committer.time };
+  }
+
+  private async decoList(): Promise<Map<string, { type: "branch" | "tag"; name: string }[]>> {
+    const map = new Map<string, { type: "branch" | "tag"; name: string }[]>();
+    for (const ref of this.store.refs()) {
+      let target = ref.target;
+      let d: { type: "branch" | "tag"; name: string };
+      if (ref.name.startsWith("refs/heads/")) d = { type: "branch", name: ref.name.slice(11) };
+      else if (ref.name.startsWith("refs/tags/")) {
+        const peeled = await this.peelToCommit(ref.target);
+        if (peeled) target = peeled.oid;
+        d = { type: "tag", name: ref.name.slice(10) };
+      } else continue;
+      map.set(target, [...(map.get(target) ?? []), d]);
+    }
+    return map;
+  }
+
+  private viewEntries(entries: TreeEntry[]) {
+    return [...entries]
+      .sort((a, b) => (isTreeMode(a.mode) === isTreeMode(b.mode) ? a.name.localeCompare(b.name) : isTreeMode(a.mode) ? -1 : 1))
+      .map((e) => {
+        const dir = isTreeMode(e.mode);
+        const gitlink = isGitlinkMode(e.mode);
+        return {
+          name: e.name,
+          type: dir ? ("tree" as const) : gitlink ? ("commit" as const) : ("blob" as const),
+          oid: gitlink ? e.oid : undefined,
+          size: dir || gitlink ? undefined : (this.store.typeAndSize(e.oid)?.size ?? 0),
+        };
+      });
+  }
+
+  private viewMeta(repo: string, ref?: string) {
+    const refs = this.store.refs();
+    const headBranch = this.store.head().replace("refs/heads/", "");
+    return {
+      repo,
+      desc: this.store.getMeta("description") || "",
+      head: headBranch,
+      ref: ref ?? headBranch,
+      branches: refs.filter((r) => r.name.startsWith("refs/heads/")).map((r) => r.name.slice(11)).slice(0, 50),
+      nBranches: refs.filter((r) => r.name.startsWith("refs/heads/")).length,
+      nTags: refs.filter((r) => r.name.startsWith("refs/tags/")).length,
+    };
+  }
+
+  /** The JSON behind one page. `status` other than 200 is mirrored as the HTTP status. */
+  async view(repo: string, host: string, proto: string, sub: string, q: URLSearchParams): Promise<{ status: number; body: Record<string, unknown> }> {
+    this.bindR2(repo);
+    const h = q.get("h") || undefined;
+    const fail = (status: number, error: string, extra: Record<string, unknown> = {}) => ({ status, body: { kind: "error", error, meta: this.viewMeta(repo, h), ...extra } });
+    const ok = (body: Record<string, unknown>) => ({ status: 200, body });
+    const path = sub === "" ? "/" : sub;
+    const cloneUrl = `${proto}://${host}/${repo}.git`;
+
+    if (path === "/") {
+      const meta = this.viewMeta(repo);
+      if (!meta.nBranches && !meta.nTags) return ok({ kind: "empty", meta, cloneUrl });
+      const headOid = this.store.resolveHead();
+      const ghHead = headOid ? await this.peelToCommit(headOid) : null;
+      let files: ReturnType<RepoCell["viewEntries"]> = [];
+      if (ghHead) {
+        const rootObj = await this.store.get(ghHead.commit.tree);
+        if (rootObj?.type === "tree") files = this.viewEntries(parseTree(rootObj.data));
+      }
+      const commits = ghHead ? await this.countCommits(ghHead.oid) : 0;
+      const langs = ghHead ? await this.languages(ghHead.commit.tree) : [];
+      let readme: { name: string; html?: string; text?: string } | null = null;
+      const rd = await this.findReadme();
+      if (rd) {
+        const robj = await this.store.get(rd.oid);
+        if (robj) {
+          const text = td.decode(robj.data);
+          const lower = rd.name.toLowerCase();
+          readme = lower.endsWith(".md") || lower.endsWith(".markdown")
+            ? { name: rd.name, html: renderMarkdown(text, { repo, ref: meta.ref }) }
+            : { name: rd.name, text };
+        }
+      }
+      let bytes = 0;
+      try { const b = this.storageBytes(); bytes = b.db + b.r2; } catch { /* optional */ }
+      return ok({
+        kind: "summary",
+        meta,
+        cloneUrl,
+        commits: commits > 1000 ? "1000+" : commits,
+        last: ghHead ? this.briefCommit(ghHead.oid, ghHead.commit) : null,
+        snapRef: meta.head || (ghHead ? ghHead.oid.slice(0, 10) : ""),
+        files,
+        readme,
+        langs: langs.map((l) => ({ name: l.name, color: l.color, pct: Math.round(l.pct * 10) / 10 })),
+        bytes,
+      });
+    }
+
+    if (path.startsWith("/tree")) {
+      const segs = decodePath(path.slice("/tree".length));
+      const meta = this.viewMeta(repo, h);
+      const rr = await this.resolveRef(h);
+      if (!rr) return fail(404, h ? `bad ref: ${h}` : "empty repository");
+      const head = await this.peelToCommit(rr.oid);
+      if (!head) return fail(404, "no commit found");
+      const found = await this.lookupPath(head.commit.tree, segs);
+      if (!found) return fail(404, `path not found: ${segs.join("/")}`);
+      if (found.kind === "tree") return ok({ kind: "tree", meta, path: segs, entries: this.viewEntries(found.entries) });
+      const obj = await this.store.get(found.entry.oid);
+      if (!obj) return fail(404, "missing blob");
+      const name = segs[segs.length - 1] ?? "";
+      const isImage = /\.(png|jpe?g|gif|webp|avif|ico|svg)$/i.test(name);
+      const binary = isBinary(obj.data);
+      const text = binary ? "" : td.decode(obj.data);
+      const lineCount = text ? text.split("\n").length - (text.endsWith("\n") ? 1 : 0) : 0;
+      const base = { kind: "blob", meta, path: segs, size: obj.data.length, binary, lineCount };
+      if (isImage && (binary || /\.svg$/i.test(name))) return ok({ ...base, image: true });
+      if (binary) return ok(base);
+      if (/\.(md|markdown)$/i.test(name)) return ok({ ...base, html: renderMarkdown(text, { repo, ref: h ?? meta.ref }) });
+      return ok({ ...base, lines: highlightLines(text, name) });
+    }
+
+    if (path === "/log/" || path === "/log") {
+      const meta = this.viewMeta(repo, h);
+      const ofs = Math.max(0, parseInt(q.get("ofs") ?? "0", 10) || 0);
+      let filter: LogFilter = {
+        path: q.get("path") ? decodePath("/" + q.get("path")!) : undefined,
+        qt: q.get("qt") ?? undefined,
+        q: q.get("q") ?? undefined,
+      };
+      let tip = h;
+      if (filter.qt === "range" && filter.q) { tip = filter.q; filter = {}; }
+      const rr = await this.resolveRef(tip);
+      if (!rr) return fail(404, tip ? `bad ref: ${tip}` : "empty repository");
+      const { entries, more } = await this.walkLog(rr.oid, ofs, LOG_PAGE, filter);
+      const deco = await this.decoList();
+      return ok({
+        kind: "log",
+        meta,
+        ofs,
+        pageSize: LOG_PAGE,
+        more,
+        filter: { qt: q.get("qt") ?? "grep", q: q.get("q") ?? "", path: q.get("path") ?? "" },
+        commits: entries.map((e) => ({ ...this.briefCommit(e.oid, e.commit), deco: deco.get(e.oid) ?? [] })),
+      });
+    }
+
+    if (path === "/branches/" || path === "/branches" || path === "/tags/" || path === "/tags") {
+      const meta = this.viewMeta(repo);
+      const refs = this.store.refs();
+      if (path.startsWith("/branches")) {
+        const head = this.store.head();
+        const items = await Promise.all(refs.filter((x) => x.name.startsWith("refs/heads/")).map(async (b) => {
+          const c = await this.peelToCommit(b.target);
+          return { name: b.name.slice(11), isDefault: b.name === head, commit: c ? this.briefCommit(c.oid, c.commit) : null };
+        }));
+        return ok({ kind: "branches", meta, items });
+      }
+      const items = await Promise.all(refs.filter((x) => x.name.startsWith("refs/tags/")).map(async (tg) => {
+        const obj = await this.store.get(tg.target);
+        let when = 0;
+        let target = tg.target;
+        if (obj?.type === "tag") {
+          const tag = parseTag(obj.data);
+          when = tag.tagger?.time ?? 0;
+          target = tag.object;
+        }
+        const c = await this.peelToCommit(target);
+        if (c && !when) when = c.commit.committer.time;
+        return { name: tg.name.slice(10), when, commit: c ? this.briefCommit(c.oid, c.commit) : null };
+      }));
+      items.sort((a, b) => b.when - a.when);
+      return ok({ kind: "tags", meta, items });
+    }
+
+    if (path === "/commit/" || path === "/commit") {
+      const meta = this.viewMeta(repo, h);
+      const oid = await this.resolveCommitId(q.get("id") ?? undefined, h);
+      if (!oid) return fail(404, "commit not found");
+      const commit = await this.loadCommit(oid);
+      if (!commit) return fail(404, `commit not found: ${oid}`);
+      const parent = commit.parents[0] ? await this.loadCommit(commit.parents[0]) : null;
+      const { files, truncated } = await this.computeDiff(parent?.tree ?? null, commit.tree);
+      const deco = await this.decoList();
+      return ok({
+        kind: "commit",
+        meta,
+        oid,
+        subject: commit.subject,
+        body: commit.message.split("\n").slice(1).join("\n").trim(),
+        author: this.personJson(commit.author),
+        committer: this.personJson(commit.committer),
+        parents: commit.parents,
+        deco: deco.get(oid) ?? [],
+        truncated,
+        files: files.map((f) => ({
+          path: f.path,
+          status: !f.o ? "added" : !f.n ? "deleted" : f.o.mode !== f.n.mode ? "mode" : "modified",
+          oldMode: f.o?.mode ?? null,
+          newMode: f.n?.mode ?? null,
+          kind: f.kind,
+          add: f.add,
+          del: f.del,
+          hunks: f.hunks,
+        })),
+      });
+    }
+
+    if (path === "/tag/" || path === "/tag") {
+      const meta = this.viewMeta(repo);
+      const name = q.get("h") ?? q.get("id") ?? "";
+      if (!name) return fail(404, "no tag given");
+      const target = this.store.getRef(`refs/tags/${name}`) ?? (await this.resolveServable(name));
+      if (!target) return fail(404, `tag not found: ${name}`);
+      const obj = await this.store.get(target);
+      if (!obj) return fail(404, "missing object");
+      let objOid = target;
+      let out: Record<string, unknown> = { kind: "tag", meta, name, annotated: false };
+      if (obj.type === "tag") {
+        const tag = parseTag(obj.data);
+        objOid = tag.object;
+        out = { ...out, name: tag.tag || name, annotated: true, tagger: tag.tagger ? this.personJson(tag.tagger) : null, message: tag.message.trim() };
+      }
+      const c = await this.peelToCommit(objOid);
+      return ok({ ...out, commit: c ? this.briefCommit(c.oid, c.commit) : { oid: objOid, subject: "", author: "", time: 0 }, snapName: name });
+    }
+
+    return fail(404, `page not found: ${path}`);
+  }
+
   private async base(repo: string, tab: string, ref?: string, formAction?: string): Promise<Omit<LayoutOpts, "body">> {
     const branches = this.store
       .refs()
@@ -942,7 +1185,7 @@ export class RepoCell extends DurableObject<Env> {
 
   private async ui(repo: string, host: string, proto: string, path: string, q: URLSearchParams): Promise<Response> {
     const h = q.get("h") ?? undefined;
-    if (path.startsWith("/api/")) return this.api(path, q);
+    if (path.startsWith("/api/")) return this.api(path, q, repo, host, proto);
     if (path === "/" || path === "") return this.summaryPage(repo, host, proto);
     // the README used to have its own "about" tab; it is on the Code page now
     if (path === "/about/" || path === "/about") return this.summaryPage(repo, host, proto);

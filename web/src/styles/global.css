@@ -1,0 +1,283 @@
+@import 'tailwindcss';
+@import './cds.css';
+@import './themes.css';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---------- Tailwind 语义映射：类名只指向 CDS 令牌（新增类前先确认这里有对应 --color-*） ---------- */
+@theme inline {
+  --color-surface-0: var(--cds-surface-0);
+  --color-surface-1: var(--cds-surface-1);
+  --color-surface-2: var(--cds-surface-2);
+  --color-surface-3: var(--cds-surface-3);
+  --color-popover-surface: var(--cds-surface-popover);
+  --color-code: var(--cds-code-bg);
+  --color-backdrop: var(--cds-backdrop);
+
+  --color-text-primary: var(--cds-text-primary);
+  --color-text-secondary: var(--cds-text-secondary);
+  --color-text-muted: var(--cds-text-muted);
+  --color-text-placeholder: var(--cds-text-placeholder);
+  --color-text-hint: var(--cds-text-hint);
+  --color-kbd: var(--cds-kbd-bg);
+  --color-kbd-fg: var(--cds-kbd-fg);
+
+  --color-hairline: var(--cds-border);
+  --color-hairline-strong: var(--cds-border-strong);
+  --color-ghost-hover: var(--cds-fill-ghost-hover);
+  --color-ghost-selected: var(--cds-fill-ghost-selected);
+  --color-fill-secondary: var(--cds-fill-secondary);
+  --color-fill-secondary-hover: var(--cds-fill-secondary-hover);
+  --color-neutral-bubble: var(--cds-bg-neutral);
+  --color-segmented-track: var(--cds-segmented-track);
+  --color-segmented-thumb: var(--cds-segmented-thumb);
+
+  /* 唯一随主题变化的颜色族 */
+  --color-accent-brand: var(--cds-accent);
+  --color-accent-hover: var(--cds-accent-hover);
+  --color-accent-soft: var(--cds-accent-soft);
+  --color-accent-fg: var(--cds-accent-foreground);
+  --color-accent-text: var(--cds-accent-text);
+
+  /* 固定品牌色（brand 按钮）与 clay */
+  --color-brand: var(--cds-fill-brand);
+  --color-brand-hover: var(--cds-fill-brand-hover);
+  --color-brand-solid: var(--cds-fill-brand-solid);
+  --color-clay: var(--cds-clay);
+
+  --color-danger: var(--cds-text-danger);
+  --color-danger-fill: var(--cds-fill-danger);
+  --color-danger-solid: var(--cds-fill-danger-solid);
+  --color-success: var(--cds-text-success);
+  --color-success-fill: var(--cds-fill-success);
+  --color-warning: var(--cds-text-warning);
+  --color-warning-fill: var(--cds-fill-warning);
+
+  --font-sans: var(--font-anthropic-sans);
+  --font-serif: var(--font-anthropic-serif);
+  --font-mono: var(--font-anthropic-mono);
+
+  /* 角色字号阶梯（Web：s = 1） */
+  --text-caption: 0.6875rem;
+  --text-caption--line-height: 1.0625rem;
+  --text-footnote: 0.8125rem;
+  --text-footnote--line-height: 1.0625rem;
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.25rem;
+  --text-callout: 0.875rem;
+  --text-callout--line-height: 1.375rem;
+  --text-heading: 0.9375rem;
+  --text-heading--line-height: 1.25rem;
+  --text-headline: 1.0625rem;
+  --text-headline--line-height: 1.5rem;
+  --text-title: 1.25rem;
+  --text-title--line-height: 1.75rem;
+  --text-title2: 1.5rem;
+  --text-title2--line-height: 2rem;
+  --text-display: 2.375rem;
+  --text-display--line-height: 1.2;
+
+  --radius-panel: var(--cds-panel-radius);
+  --radius-card: var(--cds-radius-card);
+  --radius-dialog: var(--cds-radius-dialog);
+  --radius-code: var(--cds-radius-code);
+  --radius-composer: var(--cds-radius-composer);
+
+  --shadow-hairline: 0 0 0 1px var(--cds-border);
+  --shadow-field: inset 0 0 0 1px var(--cds-border);
+  --shadow-field-strong: inset 0 0 0 1px var(--cds-border-strong);
+  --shadow-panel: var(--cds-panel-shadow);
+  --shadow-panel-hover: var(--cds-panel-shadow-hover);
+  --shadow-popover: var(--cds-shadow-popover);
+  --shadow-popover-diffuse: var(--cds-popover-diffuse);
+  --shadow-focus: var(--cds-focus-shadow);
+  --shadow-focus-danger: var(--cds-focus-shadow-danger);
+  --shadow-composer: var(--cds-shadow-composer);
+  --shadow-composer-hover: var(--cds-shadow-composer-hover);
+  --shadow-composer-focus: var(--cds-shadow-composer-focus);
+  --shadow-segmented-thumb: var(--cds-segmented-thumb-shadow);
+  --shadow-cds-sm: var(--cds-shadow-sm);
+  --shadow-cds-md: var(--cds-shadow-md);
+  --shadow-cds-lg: var(--cds-shadow-lg);
+
+  --ease-swift: var(--cds-ease-swift);
+  --ease-expand: var(--cds-ease-expand);
+  --ease-enter: var(--cds-ease-enter);
+  --ease-cds-out: var(--cds-ease-out);
+  --ease-snap: var(--cds-ease-snap);
+  --ease-overshoot: var(--cds-ease-overshoot);
+  --ease-pop: var(--cds-ease-pop);
+}
+
+/* ---------- 基础 ---------- */
+@layer base {
+  html {
+    font-size: calc(16px * var(--cds-ui-scale, 1));
+    scrollbar-gutter: stable;
+    -webkit-text-size-adjust: 100%;
+    color-scheme: light;
+  }
+  html.dark { color-scheme: dark; }
+  body {
+    font-family: var(--cds-font-body);
+    color: var(--cds-text-primary);
+    background: var(--cds-surface-1);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  h1, h2, h3, h4 { text-wrap: balance; }
+  p, li, dd, figcaption, blockquote { text-wrap: pretty; }
+  ::selection { background: var(--cds-accent-selection); }
+  :focus-visible { outline: none; }
+  button, [role='button'] { cursor: pointer; }
+  button:disabled, [aria-disabled='true'] { cursor: default; }
+  input, textarea, select, button { font: inherit; letter-spacing: inherit; }
+  code, kbd, pre, samp { font-family: var(--font-anthropic-mono); }
+  /* 移动端输入 ≥16px，防 iOS 聚焦缩放（spec §3.1） */
+  @media (max-width: 640px), (pointer: coarse) {
+    input:not([type='checkbox']):not([type='radio']), textarea, select { font-size: max(16px, 1em) !important; }
+  }
+}
+
+/* ---------- 工具类 ---------- */
+@utility font-display {
+  font-family: var(--font-anthropic-serif);
+  font-weight: 330;
+  font-variation-settings: 'opsz' 48;
+  letter-spacing: -0.012em;
+}
+@utility cds-focus {
+  &:focus-visible { box-shadow: var(--cds-focus-shadow); }
+}
+@utility tabular { font-variant-numeric: tabular-nums; }
+@utility wrap-anywhere-cjk { overflow-wrap: anywhere; word-break: normal; }
+
+/* 卡片悬停：translateY(-1.5px) + hover 阴影（spec §3.5） */
+.cds-card-interactive {
+  transition:
+    transform var(--cds-dur-base) var(--cds-ease-swift),
+    box-shadow var(--cds-dur-base) var(--cds-ease-swift);
+}
+@media (hover: hover) {
+  .cds-card-interactive:hover { transform: translateY(-1.5px); box-shadow: var(--cds-panel-shadow-hover); }
+}
+
+.cds-stage {
+  background-color: var(--cds-surface-0);
+  background-image: radial-gradient(var(--cds-alpha-2) 1px, transparent 1px);
+  background-size: 18px 18px;
+  background-position: center;
+}
+
+/* ---------- 代码块（12px 圆角、#0d0d0c、头部 36px；明暗模式都用暗色主题） ---------- */
+.cds-code {
+  border-radius: var(--cds-radius-code);
+  background: var(--cds-code-bg);
+  color: #e6e5e0;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), var(--cds-shadow-sm);
+  overflow: hidden;
+}
+.dark .cds-code { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
+/* 【a11y】站点代码框也是暗色表面：焦点环按暗色岛处理（强调色 + oklch 亮度下限 0.62，≥3:1），
+   内圈用代码底色；派生令牌在此重新声明，否则沿用 :root 上按浅色算好的值（Ink 浅色约 1.5:1）。 */
+.cds-code {
+  --cds-focus-ring: var(--cds-accent);
+  --cds-focus-glow: 0 0 8px 2px color-mix(in srgb, var(--cds-accent) 35%, transparent);
+  --cds-focus-shadow: inset 0 0 0 1px var(--cds-code-bg), 0 0 0 1.5px var(--cds-focus-ring), var(--cds-focus-glow);
+}
+@supports (color: oklch(from red l c h)) {
+  .cds-code { --cds-focus-ring: oklch(from var(--cds-accent) max(l, 0.62) c h); }
+}
+.cds-code pre {
+  margin: 0;
+  overflow: auto;
+  padding: 14px 16px;
+  font-size: 13px;
+  line-height: 1.65;
+  tab-size: 2;
+  background: transparent !important;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+.cds-code pre code { display: grid; min-width: max-content; }
+.cds-code .line { min-height: 1lh; }
+.cds-code span[style*='--shiki-dark'] { color: var(--shiki-dark) !important; }
+.cds-code .shiki { background: transparent !important; }
+
+
+/* Segmented：窄容器（block 模式）时未激活项折叠为图标（spec §6.5） */
+@container (max-width: 180px) {
+  .cds-seg[data-pills='2'] .cds-seg-item:not([data-active]):has(svg) .cds-seg-label { display: none; }
+}
+@container (max-width: 254px) {
+  .cds-seg[data-pills='3'] .cds-seg-item:not([data-active]):has(svg) .cds-seg-label { display: none; }
+}
+
+/* ==========================================================================
+   MioGit 内容样式：README / markdown、代码高亮、文件行号、diff 行。
+   这些 HTML 由服务端渲染（src/ui/markdown.ts、src/ui/highlight.ts，已净化），
+   类名沿用旧页面，数值从旧 CSS（src/ui/mio.ts）移植，只读 CDS 令牌。
+   ========================================================================== */
+.md { padding: 8px 32px 28px; line-height: 1.7; font-size: 0.9375rem; overflow-wrap: anywhere; color: var(--cds-text-primary); }
+@media (max-width: 640px) { .md { padding: 4px 16px 20px; } }
+.md > :first-child { margin-top: 16px; }
+.md p, .md ul, .md ol, .md blockquote, .md pre, .md table, .md details { margin: 0 0 16px; }
+.md ul { list-style: disc; padding-left: 1.5em; }
+.md ol { list-style: decimal; padding-left: 1.5em; }
+.md li + li { margin-top: 0.25em; }
+.md h1, .md h2 { padding-bottom: 0.3em; box-shadow: inset 0 calc(-1 * var(--cds-ring-hairline)) 0 0 var(--cds-border); }
+.md h1 { font-size: 1.75rem; line-height: 1.3; margin: 24px 0 16px; font-weight: 600; }
+.md h2 { font-size: 1.35rem; line-height: 1.35; margin: 28px 0 14px; font-weight: 600; }
+.md h3 { font-size: 1.1rem; margin: 22px 0 10px; font-weight: 600; }
+.md h4, .md h5, .md h6 { font-size: 1rem; margin: 20px 0 8px; font-weight: 600; }
+.md a { color: var(--cds-accent-text); text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 3px; }
+.md pre { background: var(--cds-code-bg); color: var(--cds-gray-60); border-radius: var(--cds-radius-code); padding: 14px 16px; overflow: auto; font-size: 12.5px; line-height: 1.6; }
+html:not(.dark) .md pre { background: var(--cds-surface-1); color: var(--cds-text-primary); box-shadow: inset 0 0 0 1px var(--cds-border); }
+.md pre code { background: none !important; padding: 0; box-shadow: none; }
+.md :not(pre) > code { font-size: 0.85em; padding: 0.15em 0.4em; border-radius: 6px; background: var(--cds-fill-secondary); }
+.md blockquote { padding: 0 16px; color: var(--cds-text-secondary); box-shadow: inset 3px 0 0 0 var(--cds-border-strong); }
+.md table { width: auto; display: block; overflow-x: auto; border-collapse: collapse; }
+.md th, .md td { padding: 6px 12px; box-shadow: inset 0 0 0 var(--cds-ring-hairline) var(--cds-border); }
+.md th { font-weight: 600; }
+.md img { max-width: 100%; border-radius: var(--cds-radius); display: inline; }
+.md hr { border: 0; height: var(--cds-ring-hairline); background: var(--cds-border); margin: 24px 0; }
+.md input[type='checkbox'] { margin-right: 0.4em; vertical-align: -0.1em; }
+
+span.hl-c { color: var(--cds-text-secondary); font-style: italic; }
+span.hl-s { color: var(--cds-text-success); }
+span.hl-k { color: var(--cds-accent-text); font-weight: 500; }
+span.hl-n { color: var(--cds-text-warning); }
+
+/* 文件查看：行号 + 代码（行号栏与代码栏同一表格，锁高） */
+table.blob { font-family: var(--font-anthropic-mono); font-size: 12.5px; line-height: 1.25rem; width: 100%; border-collapse: collapse; }
+table.blob td { padding: 0; vertical-align: top; }
+table.blob pre { margin: 0; padding: 12px 16px; }
+td.linenumbers { width: 1%; text-align: right; user-select: none; background: var(--cds-surface-1); box-shadow: inset calc(-1 * var(--cds-ring-hairline)) 0 0 var(--cds-border); }
+td.linenumbers pre { padding: 12px 12px 12px 16px; color: var(--cds-text-placeholder); font-variant-numeric: tabular-nums; }
+td.linenumbers a { color: inherit; display: block; }
+td.linenumbers a:hover { color: var(--cds-accent-text); }
+td.linenumbers a:target { color: var(--cds-accent-text); font-weight: 600; }
+
+/* diff 行（MioUI DiffViewer 同款配色：success / danger 10% 淡底，行号 tabular） */
+table.df { font-family: var(--font-anthropic-mono); font-size: 12.5px; line-height: 1.65; width: 100%; border-collapse: collapse; }
+table.df td { padding: 0; vertical-align: top; }
+td.df-n { width: 1%; min-width: 3rem; padding: 0 8px; text-align: right; color: var(--cds-text-placeholder); user-select: none; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.df-c { white-space: pre; padding: 0 16px 0 4px; }
+.df-sign { display: inline-block; width: 1.25em; user-select: none; color: var(--cds-text-secondary); }
+tr.df-add > td { background: color-mix(in srgb, var(--cds-fill-success) 10%, transparent); }
+tr.df-del > td { background: color-mix(in srgb, var(--cds-fill-danger) 10%, transparent); }
+tr.df-add .df-sign { color: var(--cds-text-success); }
+tr.df-del .df-sign { color: var(--cds-text-danger); }
+tr.df-hunk > td { background: var(--cds-fill-ghost-hover); color: var(--cds-text-secondary); padding-top: 4px; padding-bottom: 4px; }
+
+/* 页面内容入场（路由切换时只对内容区，不对顶栏/标签栏） */
+@keyframes mio-page-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.mio-page-in { animation: mio-page-in var(--cds-dur-base) var(--cds-ease-enter) both; }
+
+/* 触屏按下反馈（行 / 卡片）：只改背景色与 transform */
+.mio-row { transition: background-color var(--cds-dur-snap) var(--cds-ease-swift); }
+@media (hover: hover) { .mio-row:hover { background: var(--cds-fill-ghost-hover); } }
+.mio-row:active { background: var(--cds-fill-ghost-selected); }
+.mio-press { transition: transform var(--cds-dur-slow) var(--cds-btn-spring), box-shadow var(--cds-dur-base) var(--cds-ease-swift); }
+.mio-press:active { transform: scale(0.985); transition: transform var(--cds-dur-fast) ease-out, box-shadow var(--cds-dur-base) var(--cds-ease-swift); }

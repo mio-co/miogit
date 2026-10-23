@@ -217,7 +217,7 @@ export function emptyState(o: { icon?: string; title: string; desc?: string; act
     `</div>`;
 }
 
-const CSP =
+export const CSP =
   "default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
 
 export function htmlResponse(html: string, status = 200): Response {

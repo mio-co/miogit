@@ -37,6 +37,7 @@ import {
   verifyPassword,
 } from "./auth";
 import { isRole, type Role } from "./policy";
+import type { Boot } from "./spa";
 import { ICON_COPY, ICON_PENCIL, ICON_X, ICON_CARET_DOWN, ICON_GEAR_SIX, ICON_GLOBE, ICON_KEY, ICON_LOCK_KEY, ICON_SIGN_OUT, ICON_SLIDERS, ICON_USER_CIRCLE, ICON_WARNING } from "./ui/icons";
 
 export const CONSOLE = "/~mio";
@@ -48,6 +49,14 @@ export interface ConsoleDeps {
   indexBody: (env: Env, signedIn: boolean, settings?: boolean) => Promise<string>;
   /** tell the Worker's per-isolate registry memo (and, with an origin, the edge index cache) that a repo changed */
   invalidate: (repo: string, origin?: string) => unknown;
+  // React frontend (src/spa.ts)
+  spaShell: (req: Request, env: Env, boot: Boot, status?: number) => Promise<Response | null>;
+  spaOn: (env: Env) => boolean;
+  isSpaSub: (sub: string) => boolean;
+  bootBase: (env: Env) => { site: string; owner: string };
+  repoJson: (r: RepoInfo, full: boolean) => Record<string, unknown>;
+  storageJson: (repos: RepoInfo[], usage: { read: number; written: number } | null) => Record<string, unknown>;
+  doUsage: (env: Env) => Promise<{ read: number; written: number } | null>;
 }
 
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -532,6 +541,254 @@ export function createConsole(deps: ConsoleDeps) {
     return noStore(new Response(out.body, out));
   }
 
+  // ---------------------------------------------------------------------------
+  // JSON API + frontend pages (React). Same rules as the form handlers above/below:
+  // Access JWT and same-origin are already checked by route(); everything except
+  // session/login needs the console session; every POST needs the CSRF token in
+  // the x-csrf-token header and a JSON body (cross-site forms cannot send either).
+  // ---------------------------------------------------------------------------
+
+  function jsonRes(data: unknown, status = 200, ...cookies: string[]): Response {
+    const h = new Headers({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" });
+    for (const c of cookies) h.append("set-cookie", c);
+    return new Response(JSON.stringify(data), { status, headers: h });
+  }
+
+  function tokenJson(r: TokenRow) {
+    return { id: r.id, name: r.name, role: r.role, created: r.created, last_used: r.last_used, expires_at: r.expires_at };
+  }
+
+  function decodeRepo(raw: string): string | null {
+    try {
+      const n = decodeURIComponent(raw);
+      return REPO_NAME.test(n) && n.length <= 100 ? n : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function consoleRepos(env: Env) {
+    const repos = await env.REGISTRY.getByName("registry").list(1000, undefined, true);
+    return { repos: repos.map((r) => deps.repoJson(r, true)), storage: deps.storageJson(repos, await deps.doUsage(env).catch(() => null)) };
+  }
+
+  async function publicRepos(env: Env) {
+    const repos = await env.REGISTRY.getByName("registry").list(1000, undefined, false);
+    return { repos: repos.map((r) => deps.repoJson(r, false)) };
+  }
+
+  function repoInfoJson(info: RepoInfo) {
+    return { name: info.name, description: info.desc, owner: info.owner, section: info.section, private: !!info.priv };
+  }
+
+  /** the page view JSON of any repository (public or private), read with the console session */
+  async function consoleView(req: Request, env: Env, repo: string, rest: string, search: string): Promise<{ status: number; body: unknown }> {
+    const url = new URL(req.url);
+    const doUrl = new URL(`/api/view${rest || "/"}${search}`, url.origin);
+    const res = await env.REPO.getByName(repo).fetch(
+      new Request(doUrl.toString(), { method: "GET", headers: { "x-repo": repo, "x-host": url.host, "x-proto": url.protocol.replace(":", ""), "x-mio-role": "reader", "x-mio-token": "console" } })
+    );
+    let body: unknown = null;
+    try {
+      body = await res.json();
+    } catch {
+      body = { kind: "error", error: `HTTP ${res.status}` };
+    }
+    // the console shows the visibility next to the title (the cell does not know it)
+    const info = await env.REGISTRY.getByName("registry").get(repo);
+    const b = body as { meta?: Record<string, unknown> } | null;
+    if (b && b.meta && typeof b.meta === "object") b.meta.priv = !!info?.priv;
+    return { status: res.status, body };
+  }
+
+  async function spaPage(req: Request, env: Env, sub: string, url: URL, session: string | null, passHash: string | null): Promise<Response | null> {
+    const base = deps.bootBase(env);
+    if (sub === "/login") {
+      if (session) return null; // the form handler redirects to next
+      return deps.spaShell(req, env, { ...base, signed: false, console: true, session: null, data: { "/api/repos": { status: 200, body: await publicRepos(env) } } });
+    }
+    if (!session || !passHash) return null; // the form handler sends the visitor to /~mio/login?next=…
+    const boot = async (data: Boot["data"], status = 200) =>
+      deps.spaShell(req, env, { ...base, signed: true, console: true, session: { user: adminUser(env), csrf: await csrfToken(env, passHash, session) }, data }, status);
+    if (sub === "/" || sub === "/tokens" || sub === "/password") {
+      return boot({ "/~mio/api/repos": { status: 200, body: await consoleRepos(env) } });
+    }
+    if (/^\/tokens\/[A-Za-z0-9_-]{1,40}\/revoke$/.test(sub)) {
+      return redirect(`${CONSOLE}/tokens?next=${encodeURIComponent(dialogNext(url.searchParams.get("next")))}`);
+    }
+    const vw = /^\/r\/([^/]+)(\/.*)$/.exec(sub);
+    if (vw) {
+      const name = decodeRepo(vw[1]);
+      const rest = vw[2];
+      if (!name || deps.movedTab(rest) !== null || !deps.isSpaSub(rest)) return null;
+      if (!(await env.REGISTRY.getByName("registry").get(name))) return null;
+      const v = await consoleView(req, env, name, rest, url.search);
+      const key = `${CONSOLE}/api/r/${repoUrl(name)}/view${rest}${url.search}`;
+      return boot({ [key]: v }, v.status === 200 ? 200 : v.status);
+    }
+    const rs = /^\/repos\/([^/]+)$/.exec(sub);
+    if (rs) {
+      const name = decodeRepo(rs[1]);
+      const info = name ? await env.REGISTRY.getByName("registry").get(name) : null;
+      if (!info) return null;
+      return boot({ [`${CONSOLE}/api/repos/${repoUrl(info.name)}`]: { status: 200, body: repoInfoJson(info) } });
+    }
+    return null;
+  }
+
+  async function api(req: Request, env: Env, sub: string, url: URL, session: string | null, passHash: string | null): Promise<Response> {
+    const registry = env.REGISTRY.getByName("registry");
+    const isJson = (req.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json");
+    const readBody = async (): Promise<Record<string, unknown>> => {
+      try {
+        const v = await req.json();
+        return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+      } catch {
+        return {};
+      }
+    };
+    const str = (v: unknown) => (typeof v === "string" ? v : v == null ? "" : String(v));
+    if (req.method !== "GET" && req.method !== "POST") return jsonRes({ error: "method not allowed" }, 405);
+    if (req.method === "POST" && !isJson) return jsonRes({ error: "JSON body required" }, 415);
+
+    if (sub === "/api/session" && req.method === "GET") {
+      if (!session || !passHash) return jsonRes({ signedIn: false });
+      return jsonRes({ signedIn: true, user: adminUser(env), csrf: await csrfToken(env, passHash, session) });
+    }
+
+    if (sub === "/api/login" && req.method === "POST") {
+      const b = await readBody();
+      const user = str(b.username);
+      const pass = str(b.password);
+      const remember = b.remember === true || b.remember === "1";
+      if (!passHash) return jsonRes({ error: t("The console password is not configured (ADMIN_PASSWORD_HASH).", "管理台密码未配置（ADMIN_PASSWORD_HASH）。") }, 503);
+      const ip = clientIp(req);
+      const wait = await registry.loginBlocked(ip);
+      if (wait > 0) return jsonRes({ error: "locked", minutes: Math.ceil(wait / 60000) }, 429);
+      const userOk = await secretsEqual(user, adminUser(env));
+      const passOk = await verifyPassword(pass, passHash);
+      if (!userOk || !passOk) {
+        await registry.loginFailed(ip);
+        return jsonRes({ error: "wrong" }, 401);
+      }
+      await registry.loginSucceeded(ip);
+      const v = await makeSession(env, passHash, remember ? REMEMBER_TTL_S : SESSION_TTL_S);
+      return jsonRes({ signedIn: true, user: adminUser(env), csrf: await csrfToken(env, passHash, v), next: safeNext(str(b.next) || null) }, 200, sessionCookie(v, remember), hintCookie());
+    }
+
+    if (!session || !passHash) return jsonRes({ error: "sign in required" }, 401);
+    if (req.method === "POST" && !(await csrfValid(env, passHash, session, req.headers.get("x-csrf-token")))) return jsonRes({ error: "bad CSRF token" }, 403);
+
+    if (sub === "/api/logout" && req.method === "POST") return jsonRes({ signedIn: false }, 200, clearSessionCookie(), clearHintCookie());
+
+    if (sub === "/api/repos" && req.method === "GET") return jsonRes(await consoleRepos(env));
+
+    if (sub === "/api/tokens") {
+      if (req.method === "GET") {
+        const testTtl = parseInt(env.TEST_TOKEN_TTL_MS ?? "", 10) > 0;
+        return jsonRes({
+          tokens: (await registry.listTokens()).map(tokenJson),
+          now: Date.now(),
+          expiry: [...EXPIRY_CHOICES.map(([id, , en, zh]) => ({ id, en, zh })), ...(testTtl ? [{ id: "test", en: "test", zh: "test" }] : [])],
+          expiryDefault: EXPIRY_DEFAULT,
+        });
+      }
+      const b = await readBody();
+      const name = str(b.name).trim();
+      const role = str(b.role);
+      if (!name || name.length > 64 || /[\x00-\x1f\x7f]/.test(name)) return jsonRes({ error: t("Name must be 1–64 characters.", "名称需为 1–64 个字符。") }, 400);
+      if (!isRole(role)) return jsonRes({ error: t("Unknown role.", "未知角色。") }, 400);
+      const expiresAt = expiryFromForm(b.expires === undefined ? null : str(b.expires), env);
+      if (expiresAt === undefined) return jsonRes({ error: t("Unknown expiration.", "未知的过期时间。") }, 400);
+      const secret = newTokenSecret();
+      const row = await registry.createToken(newTokenId(), await sha256Hex(secret), name, role, expiresAt);
+      return jsonRes({ token: tokenJson(row), secret });
+    }
+    const rv = /^\/api\/tokens\/([A-Za-z0-9_-]{1,40})\/revoke$/.exec(sub);
+    if (rv && req.method === "POST") {
+      const okRevoke = await registry.revokeToken(rv[1]);
+      return jsonRes({ revoked: okRevoke }, okRevoke ? 200 : 404);
+    }
+
+    if (sub === "/api/password" && req.method === "POST") {
+      const b = await readBody();
+      const cur = str(b.current);
+      const next = str(b.next);
+      const confirm = str(b.confirm);
+      const ip = clientIp(req);
+      if ((await registry.loginBlocked(ip)) > 0) return jsonRes({ error: t("Too many failed attempts. Try again later.", "失败次数过多，请稍后再试。") }, 429);
+      if (!(await verifyPassword(cur, passHash))) {
+        await registry.loginFailed(ip);
+        return jsonRes({ error: t("Current password is wrong.", "当前密码不正确。") }, 400);
+      }
+      if (next.length < 12 || next.length > 256) return jsonRes({ error: t("The new password needs 12–256 characters.", "新密码需为 12–256 位。") }, 400);
+      if (next !== confirm) return jsonRes({ error: t("The two new passwords differ.", "两次输入的新密码不一致。") }, 400);
+      const h = await hashPassword(next);
+      await registry.setSetting("admin_password_hash", h);
+      const kept = sessionSecondsLeft(session) > SESSION_TTL_S;
+      const v = await makeSession(env, h, kept ? REMEMBER_TTL_S : SESSION_TTL_S);
+      return jsonRes({ ok: true, csrf: await csrfToken(env, h, v) }, 200, sessionCookie(v, kept), hintCookie());
+    }
+
+    const view = /^\/api\/r\/([^/]+)\/view(\/.*)?$/.exec(sub);
+    if (view && req.method === "GET") {
+      const name = decodeRepo(view[1]);
+      if (!name) return jsonRes({ error: "bad repository name" }, 400);
+      if (!(await registry.get(name))) return jsonRes({ kind: "error", error: `no such repository: ${name}` }, 404);
+      const v = await consoleView(req, env, name, view[2] ?? "/", url.search);
+      return jsonRes(v.body, v.status);
+    }
+
+    const rd = /^\/api\/repos\/([^/]+)\/delete$/.exec(sub);
+    if (rd && req.method === "POST") {
+      const name = decodeRepo(rd[1]);
+      const info = name ? await registry.get(name) : null;
+      if (!info) return jsonRes({ error: "no such repository" }, 404);
+      const b = await readBody();
+      if (str(b.confirm) !== info.name) return jsonRes({ error: t("The name does not match. Nothing was deleted.", "仓库名不一致，未删除。") }, 400);
+      const res = await env.REPO.getByName(info.name).fetch(
+        new Request(`${url.origin}/`, { method: "DELETE", headers: { "x-repo": info.name, "x-host": url.host, "x-mio-role": "admin", "x-mio-token": "console" } })
+      );
+      if (!res.ok) return jsonRes({ error: (await res.text()).slice(0, 200) }, 500);
+      await registry.remove(info.name);
+      await deps.invalidate(info.name, url.origin);
+      return jsonRes({ deleted: info.name });
+    }
+
+    const rs = /^\/api\/repos\/([^/]+)$/.exec(sub);
+    if (rs) {
+      const name = decodeRepo(rs[1]);
+      const info = name ? await registry.get(name) : null;
+      if (!info) return jsonRes({ error: "no such repository" }, 404);
+      if (req.method === "GET") return jsonRes(repoInfoJson(info));
+      const b = await readBody();
+      const part = str(b.s);
+      const general = part !== "visibility";
+      const visibility = part !== "general";
+      const cfg = {
+        description: general ? str(b.description).trim().slice(0, 500) : info.desc,
+        owner: general ? str(b.owner).trim().slice(0, 64) : info.owner,
+        section: general ? str(b.section).trim().slice(0, 64) : info.section,
+        private: visibility ? b.private === true || b.private === "1" : !!info.priv,
+      };
+      const res = await env.REPO.getByName(info.name).fetch(
+        new Request(`${url.origin}/config`, {
+          method: "PUT",
+          headers: { "content-type": "application/json", "x-repo": info.name, "x-host": url.host, "x-mio-role": "admin", "x-mio-token": "console" },
+          body: JSON.stringify(cfg),
+        })
+      );
+      if (!res.ok) return jsonRes({ error: (await res.text()).slice(0, 200) }, 500);
+      const idle = parseInt(res.headers.get("x-commit-time") ?? "", 10) || info.idle;
+      await registry.setConfig(info.name, { desc: cfg.description, owner: cfg.owner, section: cfg.section, priv: cfg.private }, idle, res.headers.get("x-main-lang") ?? undefined);
+      deps.invalidate(info.name, url.origin);
+      const fresh = await registry.get(info.name);
+      return jsonRes(repoInfoJson(fresh ?? info));
+    }
+
+    return jsonRes({ error: "not found" }, 404);
+  }
+
   /** Entry point for every path under /~mio (and /~mio itself). */
   async function handle(req: Request, env: Env): Promise<Response> {
     let res = await route(req, env);
@@ -576,6 +833,15 @@ export function createConsole(deps: ConsoleDeps) {
     const session = await validSession(req, env, passHash);
     const sub = path.slice(CONSOLE.length); // starts with "/"
 
+    // ---- JSON API for the React frontend (/~mio/api/*) ----
+    if (sub.startsWith("/api/")) return api(req, env, sub, url, session, passHash);
+
+    // ---- React frontend pages (after the same gates as the server pages) ----
+    if (req.method === "GET" && deps.spaOn(env)) {
+      const shellRes = await spaPage(req, env, sub, url, session, passHash);
+      if (shellRes) return shellRes;
+    }
+
     // ---- sign-in ----
     if (sub === "/login") {
       if (req.method === "GET") {
@@ -610,7 +876,7 @@ export function createConsole(deps: ConsoleDeps) {
 
     // every POST below needs the CSRF token (the editor checks its own)
     let form: FormData | null = null;
-    if (req.method === "POST" && !sub.startsWith("/edit/")) {
+    if (req.method === "POST" && !sub.startsWith("/edit/") && !sub.startsWith("/api/")) {
       form = await req.formData().catch(() => null);
       if (!(await csrfValid(env, passHash, session, (form?.get("csrf") as string | null) ?? null))) return text("bad CSRF token", 403);
     }

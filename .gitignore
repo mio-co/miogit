@@ -5,3 +5,4 @@ dist/
 scripts/*
 !scripts/gen-sha1dc-tables.mjs
 !scripts/hash-password.mjs
+!web/scripts/smoke-render.mjs

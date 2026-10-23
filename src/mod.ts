@@ -21,6 +21,7 @@ import { envTokens, hasHint, resolveToken, secretsEqual as secretsEqualImpl } fr
 import { roleAllows, type Principal } from "./policy";
 import { createConsole, CONSOLE } from "./admin";
 import { ICON_PENCIL, ICON_REPO, ICON_SIGN_IN, ICON_USER_CIRCLE } from "./ui/icons";
+import { spaOn, isSpaSub, spaShell, bootBase, repoJson, storageJson } from "./spa";
 
 export { RepoCell } from "./repo";
 export { Registry } from "./registry";
@@ -324,7 +325,7 @@ const FREE_ROWS_READ = 5_000_000;
 const FREE_ROWS_WRITTEN = 100_000;
 
 /** Today's (UTC) Durable Object rows read/written from the GraphQL analytics API, memoized 5 min. */
-async function doUsage(env: Env): Promise<DoUsage | null> {
+export async function doUsage(env: Env): Promise<DoUsage | null> {
   if (!env.CF_ANALYTICS_TOKEN || !env.CF_ACCOUNT_ID) return null;
   if (usageMemo && Date.now() - usageMemo.at < 300_000) return usageMemo;
   try {
@@ -632,11 +633,21 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
     movedTab,
     siteBase,
     indexBody,
+    spaShell,
+    spaOn,
+    isSpaSub,
+    bootBase,
+    repoJson,
+    storageJson,
+    doUsage,
     invalidate: (repo, origin) => {
       infoMemo.delete(repo);
       // best effort: drop this colo's cached front page so a deleted repo leaves the list now
       const cache = origin ? pageCache() : null;
-      return cache?.delete(new Request(`${origin}/?__index&__ui=${UI_VER}`, { method: "GET" })).catch(() => false);
+      return Promise.all([
+        cache?.delete(new Request(`${origin}/?__index&__ui=${UI_VER}`, { method: "GET" })).catch(() => false),
+        cache?.delete(new Request(`${origin}/?__spa_repos&__ui=${UI_VER}`, { method: "GET" })).catch(() => false),
+      ]);
     },
   });
   const inner = async (req: Request, env: E, ctx: ExecutionContext): Promise<Response> => {
@@ -681,7 +692,7 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
           }
           const repos = await env.REGISTRY.getByName("registry").list(1000, ns, full);
           const res = json({
-            repos: repos.map((r) => ({ name: r.name, description: r.desc, owner: r.owner, section: r.section, idle: r.idle, private: !!r.priv, ...(full ? { bytes: (r.db_bytes || 0) + (r.r2_bytes || 0) } : {}) })),
+            repos: repos.map((r) => repoJson(r, full)),
           });
           res.headers.set("cache-control", "private, no-store");
           return res;
@@ -709,6 +720,21 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
             res.headers.set("cache-control", "private, no-store");
             return res;
           }
+        }
+        // React frontend: index.html + the public list inlined (the list JSON is edge-cached briefly)
+        if (ui && spaOn(env) && (req.method === "GET" || req.method === "HEAD")) {
+          const cacheS = pageCache();
+          const key = new Request(`${url.origin}/?__spa_repos&__ui=${UI_VER}`, { method: "GET" });
+          let list: unknown = null;
+          const hit = cacheS ? await cacheS.match(key) : undefined;
+          if (hit) list = await hit.json().catch(() => null);
+          if (!list) {
+            const repos = await env.REGISTRY.getByName("registry").list(1000, undefined, false);
+            list = { repos: repos.map((r) => repoJson(r, false)) };
+            if (cacheS) ctx.waitUntil(cacheS.put(key, new Response(JSON.stringify(list), { headers: { "content-type": "application/json", "cache-control": "public, max-age=30" } })));
+          }
+          const shell = await spaShell(req, env, { ...bootBase(env), signed: false, console: false, data: { "/api/repos": { status: 200, body: list } } });
+          if (shell) return shell;
         }
         // the index is the front door under load: cache it briefly at the edge
         const cache = pageCache();
@@ -820,6 +846,19 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
         if (isApi) return Response.json({ error: `repository not found: ${repo}` }, { status: 404 });
         if (isProtocol) return new Response(`repository not found: ${repo}\n`, { status: 404 });
         return errorPage(siteBase(env), `no such repository: ${repo}`, 404);
+      }
+
+      // React frontend: the page's view JSON (through this same gate and the page
+      // cache below) inlined into index.html. A request with git credentials keeps
+      // the server page (the frontend's own requests never carry them).
+      if (ui && spaOn(env) && (req.method === "GET" || req.method === "HEAD") && !isProtocol && !isApi && isSpaSub(sub) && !req.headers.has("authorization")) {
+        const apiPath = `/${repoUrl(repo)}/api/view${sub === "" ? "/" : sub}${url.search}`;
+        const vres = await inner(new Request(new URL(apiPath, url.origin).toString(), { method: "GET", headers: { accept: "application/json" } }), env, ctx);
+        let body: unknown = null;
+        try { body = await vres.json(); } catch { body = null; }
+        const data: Record<string, { status: number; body: unknown }> = body ? { [apiPath]: { status: vres.status, body } } : {};
+        const shell = await spaShell(req, env, { ...bootBase(env), signed: hasHint(req), console: false, data }, vres.status === 200 || !body ? 200 : vres.status);
+        if (shell) return shell;
       }
 
       // page cache for public repo GET pages (versioned key; skipped on celld)

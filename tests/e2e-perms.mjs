@@ -112,11 +112,31 @@ const takeCookie = (res) => {
   return sc;
 };
 
+// ---- React frontend helpers -------------------------------------------------------
+const bootOf = (html) => {
+  const m = /<script type="application\/json" id="mio-boot">([\s\S]*?)<\/script>/.exec(html);
+  try { return m ? JSON.parse(m[1]) : null; } catch { return null; }
+};
+const isShell = (html) => /<div id="root"><\/div>/.test(html) && /src="\/~static\/[^"]+\.js"/.test(html) && !!bootOf(html);
+let csrfJ = "";
+async function apiPost(path, body, extra = {}) {
+  return fetch(`${BASE}${path}`, {
+    method: "POST",
+    redirect: "manual",
+    headers: H({ cookie, origin: BASE, "content-type": "application/json", ...(csrfJ ? { "x-csrf-token": csrfJ } : {}), ...extra }),
+    body: JSON.stringify(body),
+  });
+}
+const apiGet = (path, extra = {}) => fetch(`${BASE}${path}`, { redirect: "manual", headers: H({ cookie, ...extra }) });
+
 try {
   console.log("== admin token: create repos (push to a new name)");
   const src = join(tmp, "src");
   git(tmp, "init", "-q", src);
   commit(src, "a.txt", "one\n", "c1");
+  writeFileSync(join(src, "README.md"), "# Title\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1))\n");
+  git(src, "add", "-A");
+  git(src, "commit", "-qm", "readme");
   check(git(src, "push", "-q", url(ADMIN_TOKEN, "permtest"), "main").code === 0, "admin pushes new repo permtest (main)");
   git(src, "checkout", "-qb", "adminbranch");
   commit(src, "b.txt", "admin\n", "c-admin");
@@ -124,44 +144,69 @@ try {
   git(src, "checkout", "-q", "main");
   for (const r of ["mio-cli", "MioUI-shopify-admin", "deltest"]) check(git(src, "push", "-q", url(ADMIN_TOKEN, r), "main").code === 0, `admin creates ${r}`);
 
-  console.log("== sign-in button on public pages");
-  const idxHtml = await (await fetch(`${BASE}/`)).text();
-  check(/<a class='mio-btn mio-auth mio-auth-btn' href='\/~mio\/login'[^>]*data-auth='out'>/.test(idxHtml) && idxHtml.includes("data-zh='登录'") && !idxHtml.includes("管理台"), "signed out: top bar shows 登录 / Sign in -> /~mio/login");
-  check(/mio-auth-btn[^>]*>\s*<svg[^>]*><path d='M141\.66,133\.66/.test(idxHtml), "signed out: Phosphor SignIn icon (not the gear)");
-  check(/class='[^']*mio-auth-btn' href='\/~mio\/login'/.test(await (await fetch(`${BASE}/mio-cli/`)).text()), "repository page top bar has the sign-in button too");
-  const signedIdx = await (await fetch(`${BASE}/mio-cli/`, { headers: { cookie: "mg_signed=1" } })).text();
-  check(/<a class='mio-btn mio-auth mio-auth-btn' href='\/~mio\/'[^>]*data-auth='in'>/.test(signedIdx) && signedIdx.includes("data-zh='管理'"), "signed-in hint: top bar shows 管理 / Manage (UserCircle) -> /~mio/");
-  check(!/mio-tab-set/.test(signedIdx) && !/\/~mio\/repos\//.test(signedIdx), "public repo page has no Settings tab (even with the hint)");
-  const loginEntry = await fetch(`${BASE}/~mio/login`, { redirect: "manual", headers: H() });
-  check(loginEntry.status === 200, "signed out: /~mio/login opens the sign-in page");
-  check(!/<script>/.test(idxHtml), "no inline script on the index");
-
-  console.log("== repository page structure (GitHub-style, no duplicates)");
-  const ui_rp = await (await fetch(`${BASE}/mio-cli/`)).text();
-  const ui_tabs = /<nav class='mio-tabs'>([\s\S]*?)<\/nav>/.exec(ui_rp)?.[1] ?? "";
-  check((ui_tabs.match(/<a /g) || []).length === 3 && /data-zh='代码'/.test(ui_tabs) && /data-zh='提交'/.test(ui_tabs) && /data-zh='分支'/.test(ui_tabs), "public repository tabs: Code / Commits / Branches");
-  check(/class='repo-grid'/.test(ui_rp) && /class='repo-side'/.test(ui_rp) && (ui_rp.match(/data-copy='http/g) || []).length === 1 && !/class='mio-sub'/.test(ui_rp), "Code page: clone URL once (About sidebar), no description line under the title");
-  check(/<div class='gh-bar'><details class='mio-menu mio-ref'[\s\S]*?class='gh-counts'[\s\S]*?\/branches\/[\s\S]*?\/tags\/[\s\S]*?\/log\//.test(ui_rp), "counts row: branch picker, then branches · tags · commits");
+  console.log("== React frontend: shell, first data inlined, static assets");
+  const idx = await fetch(`${BASE}/`);
+  const idxHtml = await idx.text();
+  const idxBoot = bootOf(idxHtml);
+  check(idx.status === 200 && isShell(idxHtml), "/ is the frontend shell (index.html + /~static/ bundle)");
+  check(idxBoot && idxBoot.signed === false && idxBoot.console === false && idxBoot.data["/api/repos"]?.body?.repos?.some((r) => r.name === "mio-cli"), "boot block carries the public list (no extra request on first paint)");
+  check(/script-src 'self'/.test(idx.headers.get("content-security-policy") ?? "") && !/unsafe-eval/.test(idx.headers.get("content-security-policy") ?? ""), "shell keeps the strict CSP (script-src 'self')");
+  check(!/<script>/.test(idxHtml) && !/<script(?![^>]*(type="application\/json"|src=))/.test(idxHtml), "no inline executable script in the shell");
+  const asset = /src="(\/~static\/[^"]+\.js)"/.exec(idxHtml)?.[1];
+  const assetRes = asset ? await fetch(`${BASE}${asset}`) : null;
+  check(assetRes?.status === 200 && /javascript/.test(assetRes.headers.get("content-type") ?? ""), "hashed bundle served from /~static/");
+  check((await fetch(`${BASE}/~static/prefs.js`)).status === 200, "prefs boot script served");
+  const rp = await fetch(`${BASE}/mio-cli/`);
+  const rpHtml = await rp.text();
+  const rpBoot = bootOf(rpHtml);
+  const sumKey = "/mio-cli/api/view/";
+  check(rp.status === 200 && isShell(rpHtml) && rpBoot?.data[sumKey]?.body?.kind === "summary", "repo page: shell with the Code view inlined");
+  const sum = rpBoot?.data[sumKey]?.body ?? {};
+  check(sum.meta?.nBranches === 1 && sum.meta?.nTags === 0 && sum.commits === 2 && sum.last?.subject === "readme" && sum.files?.some((f) => f.name === "a.txt") && /mio-cli\.git$/.test(sum.cloneUrl), "Code view: counts (branches · tags · commits), last commit, files, clone url");
+  check(sum.readme?.html && !/<script/i.test(sum.readme.html) && !/javascript:/i.test(sum.readme.html), "README html is sanitized server-side (no <script>, no javascript: links)");
+  check(rpBoot?.console === false && rpBoot?.signed === false && !rpBoot?.session, "public repo page boot: not console, no session");
+  const signedRp = bootOf(await (await fetch(`${BASE}/mio-cli/`, { headers: { cookie: "mg_signed=1" } })).text());
+  check(signedRp?.signed === true && !signedRp?.session, "signed-in hint: boot.signed (Manage / logo to /~mio/), still no session data");
+  for (const [p, kind] of [["/mio-cli/tree/a.txt", "blob"], ["/mio-cli/tree/", "tree"], ["/mio-cli/log/", "log"], ["/mio-cli/branches/", "branches"], ["/mio-cli/tags/", "tags"], ["/mio-cli/commit/", "commit"]]) {
+    const r = await fetch(`${BASE}${p}`);
+    const b = bootOf(await r.text());
+    const key = Object.keys(b?.data ?? {})[0] ?? "";
+    check(r.status === 200 && b?.data[key]?.body?.kind === kind && key === p.replace(/^\/mio-cli/, "/mio-cli/api/view"), `deep link ${p} -> shell + ${kind} view`);
+  }
+  const lg = await (await fetch(`${BASE}/mio-cli/api/view/log/`)).json();
+  check(lg.commits?.length === 2 && /^[0-9a-f]{40}$/.test(lg.commits[0].oid) && lg.commits[0].deco?.some((d) => d.type === "branch" && d.name === "main"), "log view: full oids + branch decorations");
+  const cm = await (await fetch(`${BASE}/mio-cli/api/view/commit/`)).json();
+  check(cm.kind === "commit" && cm.files?.length === 1 && cm.files[0].path === "README.md" && cm.files[0].hunks?.length >= 1, "commit view: file diffs with hunks");
+  const bl = await (await fetch(`${BASE}/mio-cli/api/view/tree/a.txt`)).json();
+  check(bl.kind === "blob" && bl.lineCount === 1 && Array.isArray(bl.lines), "blob view: highlighted lines");
+  const nf = await fetch(`${BASE}/mio-cli/tree/nope`);
+  check(nf.status === 404 && bootOf(await nf.text())?.data["/mio-cli/api/view/tree/nope"]?.body?.kind === "error", "missing path: 404 shell with an error view");
   for (const [from, to] of [["/mio-cli/about/", "/mio-cli/"], ["/mio-cli/summary/", "/mio-cli/"], ["/mio-cli/refs/", "/mio-cli/branches/"]]) {
     const ui_mv = await fetch(`${BASE}${from}`, { redirect: "manual" });
     check(ui_mv.status === 301 && ui_mv.headers.get("location") === to, `old tab ${from} -> 301 ${to}`);
   }
-  const ui_tg = await (await fetch(`${BASE}/mio-cli/tags/`)).text();
-  check(/class='mio-seg mio-seg-links'/.test(ui_tg) && /href='\/mio-cli\/tags\/' aria-current='page'/.test(ui_tg) && /class='active' aria-current='page' href='\/mio-cli\/branches\/'/.test(ui_tg), "tags are a switch on the Branches tab");
-  const ui_lg = await (await fetch(`${BASE}/mio-cli/log/`)).text();
-  check(/class='cl-day'/.test(ui_lg) && /class='mio-btn-group cl-sha'/.test(ui_lg) && /data-copy='[0-9a-f]{40}'/.test(ui_lg), "commit list grouped by day, short sha with copy");
-  const ui_cm = await (await fetch(`${BASE}/mio-cli/commit/`)).text();
-  check(/class='mio-card cm-card'/.test(ui_cm) && /<details class='mio-card df-file'/.test(ui_cm) && !/class='commit-info'/.test(ui_cm) && !/diffstat/.test(ui_cm), "commit page: one header card + collapsible file diffs, no duplicate meta table / diffstat");
+  const blame = await fetch(`${BASE}/mio-cli/blame/a.txt`);
+  check(blame.status === 200 && /class='mio-top'/.test(await blame.text()), "blame stays a server page (same URL)");
+  check((await fetch(`${BASE}/mio-cli/stats/`)).status === 200 && (await fetch(`${BASE}/mio-cli/plain/a.txt`)).status === 200, "stats / raw stay server pages");
+  check((await fetch(`${BASE}/mio-cli/`, { headers: basic(ADMIN_TOKEN) }).then((r) => r.text())).includes("class='mio-top'"), "a request with git credentials still gets the server page");
   const entry = await fetch(`${BASE}/~mio/`, { redirect: "manual", headers: H() });
-  check(entry.status === 303 && entry.headers.get("location") === "/~mio/login?next=%2F~mio%2F", "signed-out click on the button -> /~mio/login?next=/~mio/");
+  check(entry.status === 303 && entry.headers.get("location") === "/~mio/login?next=%2F~mio%2F", "signed-out /~mio/ -> /~mio/login?next=/~mio/");
+  const loginShell = await fetch(`${BASE}/~mio/login`, { redirect: "manual", headers: H() });
+  const lsBoot = bootOf(await loginShell.text());
+  check(loginShell.status === 200 && lsBoot?.console === true && lsBoot?.session === null && lsBoot?.data["/api/repos"], "signed out: /~mio/login is the shell (sign-in dialog over the public list)");
 
-  console.log("== Access gate on /~mio/");
+  console.log("== Access gate on /~mio/ (pages and API)");
   check((await fetch(`${BASE}/~mio/login`, { redirect: "manual" })).status === 403, "no Access JWT -> 403");
   check((await fetch(`${BASE}/~mio/login`, { headers: { "cf-access-jwt-assertion": jwt({ aud: ["other"] }) } })).status === 403, "wrong AUD -> 403");
   check((await fetch(`${BASE}/~mio/login`, { headers: { "cf-access-jwt-assertion": jwt({ exp: 1 }) } })).status === 403, "expired JWT -> 403");
   const other = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
   check((await fetch(`${BASE}/~mio/login`, { headers: { "cf-access-jwt-assertion": jwt({}, other) } })).status === 403, "forged signature -> 403");
-  check((await fetch(`${BASE}/~mio/login`, { headers: H() })).status === 200, "valid JWT -> login page 200");
+  check((await fetch(`${BASE}/~mio/api/session`)).status === 403 && (await fetch(`${BASE}/~mio/api/repos`)).status === 403, "API without Access JWT -> 403");
+  check((await fetch(`${BASE}/~mio/api/login`, { method: "POST", headers: { "content-type": "application/json", origin: BASE }, body: "{}" })).status === 403, "API login without Access JWT -> 403");
+  const ses0 = await (await fetch(`${BASE}/~mio/api/session`, { headers: H() })).json();
+  check(ses0.signedIn === false && !ses0.csrf, "API session (Access, no cookie): signed out, no CSRF token");
+  check((await fetch(`${BASE}/~mio/api/repos`, { headers: H() })).status === 401, "API repos without session -> 401");
+  check((await fetch(`${BASE}/~mio/api/repos`, { headers: H(basic(ADMIN_TOKEN)) })).status === 401, "git admin token is not a console credential (API 401)");
   check((await fetch(`${BASE}/%7Emio/login`, { redirect: "manual" })).headers.get("location")?.endsWith("/~mio/login"), "/%7Emio -> 301 to /~mio");
   const legacy = await fetch(`${BASE}/login`, { redirect: "manual" });
   check(legacy.status === 302 && legacy.headers.get("location") === "/~mio/login", "legacy /login -> 302 /~mio/login");
@@ -175,52 +220,86 @@ try {
   check(git(tmp, "clone", "-q", `${BASE}/MioUI-shopify-admin.git`, join(tmp, "c-mui")).code === 0, "anonymous clone of public MioUI-shopify-admin.git");
   check((await fetch(`${BASE}/~evil/`)).status === 404, "other ~ paths are 404, never a repository");
 
-  console.log("== console login");
+  console.log("== console login (JSON API)");
+  const jl = (body, extra) => fetch(`${BASE}/~mio/api/login`, { method: "POST", redirect: "manual", headers: H({ origin: BASE, "content-type": "application/json", ...extra }), body: JSON.stringify(body) });
+  check((await jl({ username: "mio", password: ADMIN_TOKEN })).status === 401, "admin git token cannot sign in (API)");
+  check((await jl({ username: "admin", password: CONSOLE_PASS })).status === 401, "wrong username refused (API)");
+  check((await fetch(`${BASE}/~mio/api/login`, { method: "POST", headers: H({ origin: BASE, "content-type": "application/x-www-form-urlencoded" }), body: "username=mio" })).status === 415, "API refuses non-JSON bodies (415)");
+  check((await jl({ username: "mio", password: CONSOLE_PASS }, { origin: "https://evil.example" })).status === 403, "cross-origin API login -> 403");
+  const jli = await jl({ username: "mio", password: CONSOLE_PASS, remember: false, next: "//evil.example" });
+  const jlb = await jli.json();
+  const jsc = jli.headers.get("set-cookie") ?? "";
+  check(jli.status === 200 && jlb.user === "mio" && jlb.csrf && jlb.next === "/~mio/", "API login: user + CSRF token, unsafe next -> /~mio/");
+  const jA = /mg_admin=[^,]*/.exec(jsc)?.[0] ?? "";
+  check(/Path=\/~mio\//.test(jA) && /HttpOnly/.test(jA) && /Secure/.test(jA) && /SameSite=Lax/.test(jA) && !/Max-Age/.test(jA), "API login without remember-me: browser-session cookie (Path=/~mio/, HttpOnly, Secure, Lax)");
+  check(/mg_signed=1; Path=\/;[^,]*SameSite=Lax/.test(jsc), "API login sets the hint cookie");
+  const jlr = await jl({ username: "mio", password: CONSOLE_PASS, remember: true });
+  const jage = parseInt(/mg_admin=[^,]*Max-Age=(\d+)/.exec(jlr.headers.get("set-cookie") ?? "")?.[1] ?? "0", 10);
+  check(jlr.status === 200 && jage > 29 * 86400 && jage <= 30 * 86400, "API login with remember-me: 30-day cookie");
+  takeCookie(jlr);
+  csrfJ = (await jlr.json()).csrf;
+  const ses1 = await (await apiGet("/~mio/api/session")).json();
+  check(ses1.signedIn && ses1.user === "mio" && ses1.csrf === csrfJ, "API session after login");
+  check((await fetch(`${BASE}/~mio/api/repos`, { headers: { cookie } })).status === 403, "valid session but no Access JWT -> API 403");
+
+  console.log("== console login (legacy form endpoints still work)");
+  const keep = cookie;
+  cookie = "";
   const lp = await consolePost("/~mio/login", { username: "mio", password: ADMIN_TOKEN, next: "/~mio/" });
-  check(lp.status === 401 && !lp.headers.get("set-cookie"), "admin git token cannot sign in to the console");
-  const wrongUser = await consolePost("/~mio/login", { username: "admin", password: CONSOLE_PASS });
-  check(wrongUser.status === 401, "wrong username refused");
+  cookie = keep;
+  check(lp.status === 401 && !lp.headers.get("set-cookie"), "admin git token cannot sign in to the console (form)");
   const li = await consolePost("/~mio/login", { username: "mio", password: CONSOLE_PASS, next: "/" });
-  const sc = takeCookie(li);
-  check(li.status === 303 && cookie, "console login with username/password");
-  check(li.headers.get("location") === "/~mio/", "login with next=/ lands on the console home, not the site index");
-  check(/mg_signed=1; Path=\/;[^,]*SameSite=Lax/.test(sc), "login also sets the secret-free hint cookie mg_signed=1 (Path=/, SameSite=Lax)");
-  check((await consoleGet("/~mio/login?next=%2F%2Fevil.example")).headers.get("location") === "/~mio/", "next=//evil -> console home");
-  check((await consoleGet("/~mio/login?next=%2F~mio%2Ftokens")).headers.get("location") === "/~mio/tokens", "next=/~mio/tokens is honoured");
-  const scA = /mg_admin=[^,]*/.exec(sc)?.[0] ?? "";
-  check(/Path=\/~mio\//.test(scA) && /HttpOnly/.test(scA) && /Secure/.test(scA) && /SameSite=Lax/.test(scA) && !/Max-Age/.test(scA), "cookie without remember-me: Path=/~mio/, HttpOnly, Secure, SameSite=Lax, browser-session (no Max-Age)");
-  const liR = await consolePost("/~mio/login", { username: "mio", password: CONSOLE_PASS, next: "/", remember: "1" });
-  const ageR = parseInt(/mg_admin=[^,]*Max-Age=(\d+)/.exec(liR.headers.get("set-cookie") ?? "")?.[1] ?? "0", 10);
-  check(liR.status === 303 && ageR > 29 * 86400 && ageR <= 30 * 86400, "remember me: session cookie persists for 30 days");
-  const lpHtml = await (await fetch(`${BASE}/~mio/login`, { redirect: "manual", headers: H() })).text();
-  check(/name='remember' value='1' checked/.test(lpHtml) && /mio-btn-lg lg-submit/.test(lpHtml) && !/>(Cancel|取消)</.test(lpHtml) && /<div class='mio-backdrop'/.test(lpHtml) && !/<a class='mio-backdrop'/.test(lpHtml), "login dialog: remember-me (on by default), full-width Sign in, no Cancel button, backdrop tap does not close");
+  check(li.status === 303 && li.headers.get("location") === "/~mio/", "form login with next=/ lands on the console home");
+  check((await consoleGet("/~mio/login?next=%2F%2Fevil.example")).headers.get("location") === "/~mio/", "signed in: /~mio/login?next=//evil -> console home");
+  check((await consoleGet("/~mio/login?next=%2F~mio%2Ftokens")).headers.get("location") === "/~mio/tokens", "signed in: next=/~mio/tokens honoured");
   const home = await consoleGet("/~mio/");
-  const homeHtml = await home.text();
-  check(home.status === 200 && homeHtml.includes("permtest"), "console home lists repos");
+  const homeBoot = bootOf(await home.text());
+  check(home.status === 200 && homeBoot?.console && homeBoot?.session?.user === "mio" && homeBoot?.session?.csrf === csrfJ, "console home: shell with session (user + CSRF)");
+  const homeData = homeBoot?.data["/~mio/api/repos"]?.body;
+  check(homeData?.repos?.some((r) => r.name === "permtest") && typeof homeData?.storage?.db === "number" && homeData.storage.limits?.doBytes === 5 * 1024 ** 3, "console home data: every repository + storage (DO/R2 limits)");
   check((await fetch(`${BASE}/~mio/`, { redirect: "manual", headers: { cookie } })).status === 403, "valid session but no Access JWT -> 403");
 
-  console.log("== make permtest private (repo settings, CSRF)");
+  console.log("== make permtest private (settings API, CSRF)");
   const sp = await consoleGet("/~mio/repos/permtest");
-  const csrf = csrfOf(await sp.text());
-  check(sp.status === 200 && csrf, "settings page with CSRF token");
-  const sph = await (await consoleGet("/~mio/repos/permtest")).text();
-  check(!/data-dialog-layer/.test(sph) && /class='rs-page'/.test(sph) && /class='mio-tab-set active' href='\/~mio\/repos\/permtest' aria-current='page'/.test(sph), "settings is its own page (no dialog) with the Settings tab active");
-  check(/href='\/~mio\/repos\/permtest\?s=general' aria-current='page'/.test(sph) && sph.includes("?s=visibility") && sph.includes("?s=danger"), "settings section nav: General / Visibility / Danger zone");
-  check(/href=["']\/~mio\/r\/permtest\/["']/.test(sph) && /href=["']\/~mio\/r\/permtest\/log\//.test(sph) && !/href=["']\/permtest\//.test(sph), "settings page tab bar links stay under /~mio/r/permtest/");
-  const vs = await (await consoleGet("/~mio/repos/permtest?s=visibility")).text();
-  check(/name='private'/.test(vs) && /name='s' value='visibility'/.test(vs) && !/name='description'/.test(vs), "visibility section has only the private switch");
-  check((await consolePost("/~mio/repos/permtest", { description: "x", private: "1" })).status === 403, "POST without CSRF -> 403");
-  check((await consolePost("/~mio/repos/permtest", { csrf, description: "x", private: "1" }, { origin: "https://evil.example" })).status === 403, "cross-origin POST -> 403");
-  check((await consolePost("/~mio/repos/permtest", { csrf, description: "x", private: "1" }, { origin: "null", "sec-fetch-site": "cross-site" })).status === 403, "Origin: null + cross-site -> 403");
-  check((await consolePost("/~mio/repos/permtest", { csrf, description: "perm test", private: "1" }, { origin: "null", "sec-fetch-site": "same-origin" })).status === 303, "save settings (private) — browser form post (Origin: null, same-origin)");
-  const gs = await consolePost("/~mio/repos/permtest", { csrf, s: "general", description: "perm test", owner: "", section: "" });
-  check(gs.status === 303 && gs.headers.get("location") === "/~mio/repos/permtest?s=general&done=1", "General section save -> back to the same section");
-  check(/name='private' value='1' checked/.test(await (await consoleGet("/~mio/repos/permtest?s=visibility&done=1")).text()), "General save keeps the repository private");
+  const spBoot = bootOf(await sp.text());
+  check(sp.status === 200 && spBoot?.data["/~mio/api/repos/permtest"]?.body?.name === "permtest", "settings page: shell with the repository settings inlined");
+  check((await apiPost("/~mio/api/repos/permtest", { s: "visibility", private: true }, { "x-csrf-token": "" })).status === 403, "settings API without CSRF -> 403");
+  check((await apiPost("/~mio/api/repos/permtest", { s: "visibility", private: true }, { "x-csrf-token": "nope" })).status === 403, "settings API with a wrong CSRF -> 403");
+  check((await apiPost("/~mio/api/repos/permtest", { s: "visibility", private: true }, { origin: "https://evil.example" })).status === 403, "cross-origin settings API -> 403");
+  check((await apiPost("/~mio/api/repos/permtest", { s: "visibility", private: true }, { origin: "null", "sec-fetch-site": "cross-site" })).status === 403, "Origin: null + cross-site -> 403");
+  check((await fetch(`${BASE}/~mio/api/repos/permtest`, { method: "POST", headers: { cookie, origin: BASE, "content-type": "application/json", "x-csrf-token": csrfJ }, body: '{"s":"visibility","private":true}' })).status === 403, "settings API without Access JWT -> 403");
+  const sv = await apiPost("/~mio/api/repos/permtest", { s: "visibility", private: true });
+  check(sv.status === 200 && (await sv.json()).private === true, "visibility saved (private)");
+  const sg = await apiPost("/~mio/api/repos/permtest", { s: "general", description: "perm test", owner: "", section: "" });
+  const sgb = await sg.json();
+  check(sg.status === 200 && sgb.description === "perm test" && sgb.private === true, "General save keeps the repository private");
+  const csrf = csrfJ; // the form endpoints take the same token
+  check((await consolePost("/~mio/repos/permtest", { description: "x", private: "1" })).status === 403, "legacy form POST without CSRF -> 403");
+  check((await consolePost("/~mio/repos/permtest", { csrf, s: "general", description: "perm test", owner: "", section: "" })).status === 303, "legacy form POST with CSRF still works");
   check((await fetch(`${BASE}/permtest.git/info/refs?service=git-upload-pack`)).status === 401, "private repo: anonymous info/refs 401");
   check((await fetch(`${BASE}/permtest.git/info/refs?service=git-upload-pack`, { headers: { cookie } })).status === 401, "console cookie is not a git credential");
   check((await fetch(`${BASE}/permtest/config`, { method: "PUT", headers: basic(ADMIN_TOKEN), body: "{}" })).status === 404, "legacy PUT /<repo>/config gone (moved to console)");
 
-  console.log("== web editor lives in the console");
+  console.log("== private data never leaks to anonymous visitors");
+  for (const p of ["/permtest/api/view/", "/permtest/api/view/tree/a.txt", "/permtest/api/view/log/", "/permtest/api/view/commit/", "/permtest/api/view/branches/", "/permtest/api/view/tags/", "/permtest/api/view/tag/?h=x", "/permtest/api/tree", "/permtest/api/blob?path=a.txt", "/permtest/api/refs"]) {
+    const r = await fetch(`${BASE}${p}`, { redirect: "manual" });
+    const body = await r.text();
+    check(r.status === 401 && !body.includes("a.txt") && !body.includes("perm test"), `anonymous ${p} -> 401, nothing leaked`);
+  }
+  for (const p of ["/permtest/", "/permtest/tree/a.txt", "/permtest/log/", "/permtest/commit/"]) {
+    const r = await fetch(`${BASE}${p}`, { redirect: "manual" });
+    const body = await r.text();
+    check(r.status === 302 && r.headers.get("location") === `/~mio/r${p}` && !body.includes("a.txt"), `anonymous ${p} -> 302 /~mio/r${p}, empty body`);
+  }
+  const pubIdx = await (await fetch(`${BASE}/`)).text();
+  check(!pubIdx.includes("permtest") && !(await (await fetch(`${BASE}/api/repos`)).text()).includes("permtest"), "public index shell / API do not list the private repo");
+  const fzv = await fetch(`${BASE}/permtest/api/view/`, { headers: { cookie: "mg_signed=1" } });
+  check(fzv.status === 401, "forged hint cookie: private view API still 401");
+  check((await fetch(`${BASE}/~mio/api/r/permtest/view/`, { headers: H() })).status === 401, "console view API without session -> 401");
+  check((await fetch(`${BASE}/~mio/api/r/permtest/view/`, { headers: { cookie } })).status === 403, "console view API without Access -> 403");
+  check((await fetch(`${BASE}/~mio/api/r/permtest/view/`, { headers: H(basic(ADMIN_TOKEN)) })).status === 401, "console view API with a git token (no session) -> 401");
+
+  console.log("== web editor lives in the console (server page)");
   const legacyEdit = await fetch(`${BASE}/permtest/edit/a.txt?h=main`, { redirect: "manual", headers: basic(ADMIN_TOKEN) });
   check(legacyEdit.status === 303 && legacyEdit.headers.get("location") === "/~mio/edit/permtest/a.txt?h=main", "legacy editor URL -> /~mio/edit/…");
   const ep = await consoleGet("/~mio/edit/permtest/a.txt?h=main");
@@ -231,23 +310,22 @@ try {
   const es = await consolePost("/~mio/edit/permtest", { csrf: ecsrf, branch: "main", path: "a.txt", base, content: "edited\n", message: "web edit" });
   check(es.status === 303, "editor commit via console");
 
-  console.log("== one list for public + private, browsing stays under /~mio/");
-  const HINT = "mg_signed=1";
-  const both = await (await consoleGet("/~mio/")).text();
-  check(both.includes("href='/~mio/r/permtest/'") && both.includes("href='/~mio/r/mio-cli/'") && /permtest[\s\S]{0,200}rl-priv/.test(both), "console list has public and private repos, links under /~mio/r/");
-  check(!/class='rl-name' href='\/(?!~mio)/.test(both), "no repo link in the console list leaves /~mio/");
+  console.log("== console: one list, private repositories readable with the session");
+  const both = await (await apiGet("/~mio/api/repos")).json();
+  check(both.repos.some((r) => r.name === "permtest" && r.private === true) && both.repos.some((r) => r.name === "mio-cli" && r.private === false), "console list: public + private, with the private flag");
   const pv = await consoleGet("/~mio/r/permtest/");
-  const pvh = await pv.text();
-  check(pv.status === 200 && pvh.includes("a.txt"), "signed in: private repo page opens inside the console, no second login");
-  check(/<nav class='mio-tabs'>[\s\S]*<a class='mio-tab-set' href='\/~mio\/repos\/permtest'>[\s\S]*<\/nav>/.test(pvh), "console repo page: Settings tab at the end of the tab bar -> /~mio/repos/permtest");
-  check(/<\/h1><span class='mio-badge mio-badge-accent rl-priv-h'>/.test(pvh), "console repo page: Private badge next to the title");
+  const pvBoot = bootOf(await pv.text());
+  const pvView = pvBoot?.data["/~mio/api/r/permtest/view/"]?.body;
+  check(pv.status === 200 && pvView?.kind === "summary" && pvView.files.some((f) => f.name === "a.txt") && pvView.meta.priv === true, "signed in: private repo Code view inside the console (priv flag for the badge)");
+  const pvt = await (await apiGet("/~mio/api/r/permtest/view/tree/a.txt?h=main")).json();
+  check(pvt.kind === "blob" && pvt.lines?.[0] === "edited", "console view API: blob of a private repo (after the web edit)");
+  for (const p of ["tree/?h=main", "log/", "branches/", "tags/", "commit/"]) {
+    const r = await consoleGet(`/~mio/r/permtest/${p}`);
+    check(r.status === 200 && isShell(await r.text()), `/~mio/r/permtest/${p} -> shell`);
+  }
   check((await consoleGet("/~mio/r/permtest/about/")).headers.get("location") === "/~mio/r/permtest/", "console viewer: old about tab -> 301 to the Code page");
-  check(/<div class='gh-bar'><details class='mio-menu mio-ref' data-menu>[\s\S]*?<div class='gh-counts'>/.test(pvh) && !/class='mio-refbar'/.test(pvh) && /href=["']\/~mio\/r\/permtest\/tree\/\?h=adminbranch["']/.test(pvh) && !/<select name='h'/.test(pvh) && !/<details/.test(/<nav class='mio-tabs'>([\s\S]*?)<\/nav>/.exec(pvh)?.[1] ?? "<details"), "branch switcher: first item of the counts row (branches · tags · commits), links, no select/submit, no separate ref bar");
-  check(!/class='rl-set'/.test(both), "console list rows no longer carry a settings link");
-  check(/<section class='mio-card st-panel'[\s\S]*<ul class='st-rings'>/.test(both) && (both.match(/class='st-ring-item/g) || []).length >= 2 && !/st-kpis|st-quota/.test(both), "storage card is one row of rings (DO / R2 …)");
-  check(/href=["']\/~mio\/r\/permtest\/tree\//.test(pvh) && !/href=["']\/permtest\//.test(pvh), "in-repo links (tree/log/commits…) stay under /~mio/r/permtest/");
-  check(/class=["']mio-brand["'] href=["']\/~mio\/["']/.test(pvh), "logo inside the console viewer -> /~mio/");
-  check((await consoleGet("/~mio/r/permtest/tree/?h=main")).status === 200 && (await consoleGet("/~mio/r/permtest/log/")).status === 200, "tree / log pages via the viewer");
+  const vbl = await consoleGet("/~mio/r/permtest/blame/a.txt");
+  check(vbl.status === 200 && /class='mio-top'/.test(await vbl.text()), "console viewer: blame stays the server page");
   const raw = await consoleGet("/~mio/r/permtest/plain/a.txt?h=main");
   check(raw.status === 200 && /sandbox/.test(raw.headers.get("content-security-policy") ?? ""), "raw files via the viewer carry a sandbox CSP");
   check((await consoleGet("/~mio/r/permtest/info/refs?service=git-upload-pack")).status === 404, "viewer does not serve the git protocol");
@@ -257,12 +335,12 @@ try {
   check((await fetch(`${BASE}/permtest/`, { redirect: "manual", headers: basic(ADMIN_TOKEN) })).status === 200, "token in Basic auth still reads the private page at the root path");
   const nx = await fetch(`${BASE}/~mio/r/permtest/tree/?h=main`, { redirect: "manual", headers: H() });
   check(nx.status === 303 && nx.headers.get("location") === "/~mio/login?next=%2F~mio%2Fr%2Fpermtest%2Ftree%2F%3Fh%3Dmain", "signed out: viewer -> login with the full path as next");
-  const back = await fetch(`${BASE}/~mio/login`, { method: "POST", redirect: "manual", headers: H({ origin: BASE, "content-type": "application/x-www-form-urlencoded" }), body: new URLSearchParams({ username: "mio", password: CONSOLE_PASS, next: "/~mio/r/permtest/tree/?h=main" }).toString() });
-  check(back.status === 303 && back.headers.get("location") === "/~mio/r/permtest/tree/?h=main", "after login next returns to the same repository page");
+  const back = await jl({ username: "mio", password: CONSOLE_PASS, next: "/~mio/r/permtest/tree/?h=main" });
+  check(back.status === 200 && (await back.json()).next === "/~mio/r/permtest/tree/?h=main", "after login next returns to the same repository page");
+  const HINT = "mg_signed=1";
   const hr = await fetch(`${BASE}/`, { redirect: "manual", headers: { cookie: HINT } });
   check(hr.status === 302 && hr.headers.get("location") === "/~mio/", "signed in (hint): / -> /~mio/");
-  check(/class=["']mio-brand["'] href=["']\/~mio\/["']/.test(await (await fetch(`${BASE}/mio-cli/`, { headers: { cookie: HINT } })).text()), "signed in (hint): logo on public pages -> /~mio/");
-  check(/class='mio-brand' href='\/'/.test(await (await fetch(`${BASE}/mio-cli/`)).text()), "signed out: logo -> /");
+
   console.log("== forged hint cookie grants nothing");
   const fz = await fetch(`${BASE}/permtest/`, { redirect: "manual", headers: { cookie: HINT } });
   check(fz.status === 302 && !(await fz.text()).includes("a.txt"), "forged hint: private repo page not served at the root path");
@@ -272,58 +350,45 @@ try {
   check(fh.status === 303 && /^\/~mio\/login/.test(fh.headers.get("location") ?? "") && /mg_signed=; Path=\/; Max-Age=0/.test(fh.headers.get("set-cookie") ?? ""), "forged/stale hint with Access but no session -> login, and the hint is cleared");
   check(!(await (await fetch(`${BASE}/api/repos`, { headers: { cookie: HINT } })).text()).includes("permtest"), "forged hint: /api/repos still public-only");
 
-  console.log("== create tokens");
+  console.log("== access tokens (API)");
+  const tl0 = await (await apiGet("/~mio/api/tokens")).json();
+  check(Array.isArray(tl0.tokens) && tl0.expiryDefault === "30" && ["7", "30", "90", "365", "never"].every((v) => tl0.expiry.some((x) => x.id === v)), "token list API: expiry choices 7/30/90/365/never, default 30");
+  check((await apiPost("/~mio/api/tokens", { name: "x", role: "reader" }, { "x-csrf-token": "" })).status === 403, "create token without CSRF -> 403");
+  check((await apiPost("/~mio/api/tokens", { name: "", role: "reader" })).status === 400, "empty name -> 400");
+  check((await apiPost("/~mio/api/tokens", { name: "x", role: "root" })).status === 400, "unknown role -> 400");
+  check((await apiPost("/~mio/api/tokens", { name: "x", role: "reader", expires: "999" })).status === 400, "unknown expiration -> 400");
   const tokens = {};
   for (const [name, role] of [["hark-writer", "writer"], ["hark-reader", "reader"], ["hark-writer2", "writer"]]) {
-    const r = await consolePost("/~mio/tokens", { csrf, name, role });
-    const html = await r.text();
-    const m = /readonly value='(mgt_[A-Za-z0-9_-]+)'/.exec(html);
-    check(r.status === 200 && m, `create ${role} token "${name}" (plaintext shown once)`);
-    check((r.headers.get("cache-control") ?? "").includes("no-store"), "token reveal page is no-store");
-    tokens[name] = m?.[1];
+    const r = await apiPost("/~mio/api/tokens", { name, role });
+    const b = await r.json();
+    check(r.status === 200 && /^mgt_[A-Za-z0-9_-]+$/.test(b.secret ?? "") && b.token?.role === role && (r.headers.get("cache-control") ?? "").includes("no-store"), `create ${role} token "${name}" (plaintext once, no-store)`);
+    tokens[name] = b.secret;
   }
-  const list = await (await consoleGet("/~mio/tokens")).text();
-  check(list.includes("hark-writer") && !list.includes(tokens["hark-writer"]), "token list shows names, never plaintext");
-
-  console.log("== account entry points + token / password dialogs");
-  const homeNow = await (await consoleGet("/~mio/")).text();
-  check(!/ad-tokens/.test(homeNow) && !/class='mio-head-act'/.test(homeNow), "console list header has no separate Access tokens button");
-  check(/<details class='mio-menu mio-acct' data-menu>[\s\S]*href='\/~mio\/tokens\?next=%2F~mio%2F'[\s\S]*href='\/~mio\/password\?next=%2F~mio%2F'[\s\S]*action='\/~mio\/logout'[\s\S]*<\/details>/.test(homeNow) && !homeNow.includes("id='mh-auth'"), "top-bar account menu: tokens / password (dialogs, next = this page) / sign out");
-  const repoNow = await (await consoleGet("/~mio/r/permtest/")).text();
-  check(/<details class='mio-menu mio-acct'/.test(repoNow) && repoNow.includes("href='/~mio/tokens?next=%2F~mio%2Fr%2Fpermtest%2F'"), "account menu on console repository pages too (returns to that page)");
-  check(/data-dialog-layer/.test(list) && /class='mio-dialog mio-dialog-lg'/.test(list) && /<main id='cgit'[^>]*inert/.test(list) && /class='mio-dialog-b'/.test(list) && list.includes("st-panel"), "token page = dialog (lg, scrolling body) over the console list (inert behind)");
-  const overRepo = await (await consoleGet("/~mio/tokens?next=%2F~mio%2Fr%2Fpermtest%2F")).text();
-  check(/data-dialog-layer/.test(overRepo) && /class='gh-files'|class='list gh-files'/.test(overRepo) && /class='mio-backdrop' href='\/~mio\/r\/permtest\/'/.test(overRepo) && /name='next' value='\/~mio\/r\/permtest\/'/.test(overRepo), "token dialog opened from a repository page keeps that page behind; close / forms return there");
-  check(/data-cancel='\/~mio\/'/.test(await (await consoleGet("/~mio/tokens?next=%2F%2Fevil.example")).text()), "next=//evil -> dialog returns to the console home");
-  check(/<select name='expires'>/.test(list) && /value='30' selected/.test(list) && ["7", "90", "365", "never"].every((v) => list.includes(`value='${v}'`)), "expiration choices 7/30/90/365 days/never, default 30");
-  const pwd = await (await consoleGet("/~mio/password?next=%2F~mio%2Fr%2Fpermtest%2F")).text();
-  check(/data-dialog-layer/.test(pwd) && /action='\/~mio\/password'/.test(pwd) && /name='back' value='\/~mio\/r\/permtest\/'/.test(pwd) && /name='csrf'/.test(pwd), "password page = dialog over the page it was opened from (CSRF, back)");
+  const tl1 = await (await apiGet("/~mio/api/tokens")).text();
+  check(tl1.includes("hark-writer") && !tl1.includes(tokens["hark-writer"]) && !/"hash"/.test(tl1), "token list never contains plaintext or hashes");
+  const lf = await consolePost("/~mio/tokens", { csrf, name: "legacy-form", role: "reader" });
+  check(lf.status === 200 && /mgt_[A-Za-z0-9_-]{20,}/.test(await lf.text()), "legacy form token creation still works");
 
   console.log("== token expiry");
-  const legacyRow = /<span data-noi18n>hark-reader<\/span>[\s\S]*?<td class='tk-t tk-e'>([\s\S]*?)<\/td>/.exec(list)?.[1] ?? "";
-  check(/Never/.test(legacyRow), "token created without an expiration (as before) never expires");
-  const bad30 = await consolePost("/~mio/tokens", { csrf, name: "x", role: "reader", expires: "999" });
-  check(bad30.status === 400, "unknown expiration -> 400");
-  const c30 = await consolePost("/~mio/tokens", { csrf, name: "hark-30d", role: "reader", expires: "30" });
-  const c30h = await c30.text();
-  const T30 = /readonly value='(mgt_[A-Za-z0-9_-]+)'/.exec(c30h)?.[1];
+  const c30 = await apiPost("/~mio/api/tokens", { name: "hark-30d", role: "reader", expires: "30" });
+  const c30b = await c30.json();
+  const T30 = c30b.secret;
   const want30 = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
-  check(c30.status === 200 && T30 && c30h.includes(want30), `30-day token created, expires ${want30}`);
-  const cx = await consolePost("/~mio/tokens", { csrf, name: "hark-short", role: "reader", expires: "test" });
-  const TX = /readonly value='(mgt_[A-Za-z0-9_-]+)'/.exec(await cx.text())?.[1];
-  check(cx.status === 200 && TX, "short-lived token created");
+  check(c30.status === 200 && T30 && new Date(c30b.token.expires_at).toISOString().slice(0, 10) === want30, `30-day token created, expires ${want30}`);
+  const TX = (await (await apiPost("/~mio/api/tokens", { name: "hark-short", role: "reader", expires: "test" })).json()).secret;
+  check(!!TX, "short-lived token created");
   check(git(tmp, "ls-remote", url(TX, "permtest")).code === 0, "not yet expired: token reads the private repo");
+  check((await fetch(`${BASE}/permtest/api/view/`, { headers: basic(TX) })).status === 200, "reader token reads the private view API");
   await new Promise((r) => setTimeout(r, 4500));
-  const lx = git(tmp, "ls-remote", url(TX, "permtest"));
-  check(lx.code !== 0, "expired token: git ls-remote refused");
+  check(git(tmp, "ls-remote", url(TX, "permtest")).code !== 0, "expired token: git ls-remote refused");
   check((await fetch(`${BASE}/permtest.git/info/refs?service=git-upload-pack`, { headers: basic(TX) })).status === 401, "expired token: private info/refs 401");
   check((await fetch(`${BASE}/mio-cli.git/info/refs?service=git-upload-pack`, { headers: basic(TX) })).status === 401, "expired token: refused even on a public repo");
   check((await fetch(`${BASE}/api/repos`, { headers: basic(TX) })).status === 401, "expired token: /api/repos 401");
+  check((await fetch(`${BASE}/permtest/api/view/`, { headers: basic(TX) })).status === 401, "expired token: view API 401");
   check(git(tmp, "ls-remote", url(T30, "permtest")).code === 0, "unexpired 30-day token still works");
   check(git(tmp, "ls-remote", url(tokens["hark-reader"], "permtest")).code === 0, "token without expiration still works");
-  const listX = await (await consoleGet("/~mio/tokens")).text();
-  check(/<tr class='is-expired'><td class='tk-name'><span data-noi18n>hark-short<\/span>[\s\S]*?class='tk-exp is-expired'/.test(listX), "list marks the expired token in red (Expired)");
-  check(new RegExp(`hark-30d</span>[\\s\\S]*?<td class='tk-t tk-e'><span title='[^']+'>${want30}</span>`).test(listX), "list shows the 30-day token's expiry date");
+  const tl2 = (await (await apiGet("/~mio/api/tokens")).json()).tokens;
+  check(tl2.find((x) => x.name === "hark-short")?.expires_at <= Date.now() && tl2.find((x) => x.name === "hark-reader")?.expires_at === 0, "list: expired token has expires_at in the past, legacy-style token never expires");
   const W = tokens["hark-writer"], R = tokens["hark-reader"], W2 = tokens["hark-writer2"];
 
   console.log("== reader");
@@ -331,9 +396,10 @@ try {
   check(git(tmp, "clone", "-q", url(R, "permtest"), rc).code === 0, "reader clones private repo");
   commit(rc, "r.txt", "r\n", "reader commit");
   git(rc, "checkout", "-qb", "rfeat");
-  const rp = git(rc, "push", url(R, "permtest"), "rfeat");
-  check(rp.code !== 0 && /read-only token/.test(rp.out), "reader push refused (remote error: read-only token)");
-  check((await fetch(`${BASE}/~mio/login`, { method: "POST", headers: H({ origin: BASE, "content-type": "application/x-www-form-urlencoded" }), body: `username=mio&password=${R}` })).status === 401, "reader token cannot sign in");
+  const rpush = git(rc, "push", url(R, "permtest"), "rfeat");
+  check(rpush.code !== 0 && /read-only token/.test(rpush.out), "reader push refused (remote error: read-only token)");
+  check((await jl({ username: "mio", password: R })).status === 401, "reader token cannot sign in");
+  check((await fetch(`${BASE}/~mio/api/tokens`, { headers: H(basic(R)) })).status === 401, "reader token cannot use the console API");
 
   console.log("== writer");
   const wc = join(tmp, "writer");
@@ -345,8 +411,8 @@ try {
   check(git(wc, "push", "-q", url(W, "permtest"), "feat").code === 0, "writer fast-forwards own branch");
   git(wc, "commit", "-q", "--amend", "-m", "w2 amended");
   check(git(wc, "push", "-q", "-f", url(W, "permtest"), "feat").code === 0, "writer force-pushes own branch");
-  // main
   git(wc, "checkout", "-q", "main");
+  git(wc, "pull", "-q", url(W, "permtest"), "main");
   commit(wc, "m.txt", "m\n", "to main");
   let r = git(wc, "push", url(W, "permtest"), "main");
   check(r.code !== 0 && /protected branch/.test(r.out), "writer push to main refused (ng protected branch)");
@@ -356,7 +422,6 @@ try {
   check(r.code !== 0 && /protected branch/.test(r.out), "writer force-push main refused");
   r = git(wc, "push", url(W, "permtest"), ":main");
   check(r.code !== 0 && /protected branch/.test(r.out), "writer delete main refused");
-  // somebody else's branch
   git(wc, "fetch", "-q", url(W, "permtest"), "adminbranch:adminbranch");
   git(wc, "checkout", "-q", "adminbranch");
   commit(wc, "b.txt", "ff\n", "ff on admin branch");
@@ -368,7 +433,6 @@ try {
   check(r.code !== 0 && /only delete branches it created/.test(r.out), "writer delete of others' branch refused");
   r = git(wc, "push", url(W2, "permtest"), ":feat");
   check(r.code !== 0 && /only delete branches it created/.test(r.out), "second writer cannot delete first writer's branch");
-  // tags, new repos, atomicity
   git(wc, "tag", "v-w");
   r = git(wc, "push", url(W, "permtest"), "v-w");
   check(r.code !== 0 && /only push branches/.test(r.out), "writer tag push refused");
@@ -383,6 +447,7 @@ try {
   check(!/refs\/heads\/mixed/.test(git(tmp, "ls-remote", url(ADMIN_TOKEN, "permtest")).out), "…and the feature ref was not created");
   check(git(wc, "push", "-q", url(W, "permtest"), ":feat").code === 0, "writer deletes own branch");
   check((await fetch(`${BASE}/~mio/tokens`, { headers: { ...basic(W), "cf-access-jwt-assertion": ACCESS }, redirect: "manual" })).status === 303, "writer token gives no console access (redirect to login)");
+  check((await fetch(`${BASE}/~mio/api/repos/permtest/delete`, { method: "POST", headers: H({ ...basic(W), origin: BASE, "content-type": "application/json" }), body: '{"confirm":"permtest"}' })).status === 401, "writer token cannot delete through the API");
 
   console.log("== admin keeps full control");
   const ac = join(tmp, "admin");
@@ -395,70 +460,68 @@ try {
   git(ac, "tag", "v1");
   check(git(ac, "push", "-q", url(ADMIN_TOKEN, "permtest"), "v1").code === 0, "admin pushes a tag");
   check((await fetch(`${BASE}/api/repos`, { headers: basic(R) }).then((x) => x.json())).repos.some((x) => x.name === "permtest"), "reader token lists private repos via /api/repos");
+  check((await fetch(`${BASE}/~mio/api/repos/permtest/delete`, { method: "POST", headers: H({ ...basic(ADMIN_TOKEN), origin: BASE, "content-type": "application/json" }), body: '{"confirm":"permtest"}' })).status === 401, "admin git token cannot delete through the API");
+  const tagv = await (await apiGet("/~mio/api/r/permtest/view/tag/?h=v1")).json();
+  check(tagv.kind === "tag" && tagv.name === "v1" && tagv.commit?.subject === "admin rewrite", "tag view");
 
-  console.log("== revoke");
-  const listHtml = await (await consoleGet("/~mio/tokens")).text();
-  const id = new RegExp(`>hark-writer</span>[\\s\\S]*?/~mio/tokens/([A-Za-z0-9_-]+)/revoke`).exec(listHtml)?.[1];
-  const confirm = await consoleGet(`/~mio/tokens/${id}/revoke`);
-  const confirmHtml = await confirm.text();
-  check(confirm.status === 200 && confirmHtml.includes("hark-writer") && /data-dialog-layer/.test(confirmHtml) && /class='mio-dialog-icon is-danger'/.test(confirmHtml) && /mio-btn-danger-solid/.test(confirmHtml), "revoke confirmation (danger dialog)");
-  check((await consolePost(`/~mio/tokens/${id}/revoke`, { csrf })).status === 303, "revoke");
+  console.log("== revoke (API)");
+  const list3 = (await (await apiGet("/~mio/api/tokens")).json()).tokens;
+  const wid = list3.find((x) => x.name === "hark-writer")?.id;
+  check((await apiPost(`/~mio/api/tokens/${wid}/revoke`, {}, { "x-csrf-token": "" })).status === 403, "revoke without CSRF -> 403");
+  check((await apiPost(`/~mio/api/tokens/${wid}/revoke`, {})).status === 200, "revoke");
   check(git(tmp, "ls-remote", url(W, "permtest")).code !== 0, "revoked writer token fails immediately");
   check(git(tmp, "ls-remote", url(R, "permtest")).code === 0, "other tokens unaffected");
+  check(!(await (await apiGet("/~mio/api/tokens")).json()).tokens.some((x) => x.id === wid), "revoked token leaves the list");
+  const rvg = await consoleGet(`/~mio/tokens/${wid}/revoke`);
+  check(rvg.status === 303 && /^\/~mio\/tokens\?next=/.test(rvg.headers.get("location") ?? ""), "old revoke URL -> tokens dialog");
 
   console.log("== delete a repository (console only)");
   check((await fetch(`${BASE}/deltest`, { method: "DELETE", headers: basic(ADMIN_TOKEN) })).status === 404, "admin git token cannot DELETE /<repo>");
   check((await fetch(`${BASE}/deltest/`)).status === 200, "…and deltest still exists");
-  const ds = await (await consoleGet("/~mio/repos/deltest")).text();
-  check(ds.includes("href='/~mio/repos/deltest?s=danger'"), "settings page links to the danger zone");
-  const dp = await consoleGet("/~mio/repos/deltest?s=danger");
-  const dh = await dp.text();
-  check(dp.status === 200 && /action='\/~mio\/repos\/deltest\/delete'/.test(dh) && /name='confirm'[^>]*required/.test(dh) && dh.includes("mio-btn-danger-solid") && !/data-dialog-layer/.test(dh), "danger zone page (no dialog) asks for the name");
   const dg = await consoleGet("/~mio/repos/deltest/delete");
   check(dg.status === 303 && dg.headers.get("location") === "/~mio/repos/deltest?s=danger", "old delete URL -> danger zone page");
-  check((await consolePost("/~mio/repos/deltest/delete", { confirm: "deltest" })).status === 403, "delete without CSRF -> 403");
-  check((await consolePost("/~mio/repos/deltest/delete", { csrf, confirm: "deltest" }, { origin: "https://evil.example" })).status === 403, "cross-origin delete -> 403");
-  check((await fetch(`${BASE}/~mio/repos/deltest/delete`, { method: "POST", redirect: "manual", headers: { cookie, origin: BASE, "content-type": "application/x-www-form-urlencoded" }, body: `csrf=${encodeURIComponent(csrf)}&confirm=deltest` })).status === 403, "delete without Access JWT -> 403");
-  check((await consolePost("/~mio/repos/deltest/delete", { csrf, confirm: "deltes" })).status === 400, "wrong name -> 400, nothing deleted");
-  check((await consolePost("/~mio/repos/deltest/delete", { csrf, confirm: "DELTEST" })).status === 400, "name is case-sensitive");
+  check((await apiPost("/~mio/api/repos/deltest/delete", { confirm: "deltest" }, { "x-csrf-token": "" })).status === 403, "delete without CSRF -> 403");
+  check((await apiPost("/~mio/api/repos/deltest/delete", { confirm: "deltest" }, { origin: "https://evil.example" })).status === 403, "cross-origin delete -> 403");
+  check((await fetch(`${BASE}/~mio/api/repos/deltest/delete`, { method: "POST", redirect: "manual", headers: { cookie, origin: BASE, "content-type": "application/json", "x-csrf-token": csrfJ }, body: '{"confirm":"deltest"}' })).status === 403, "delete without Access JWT -> 403");
+  check((await apiPost("/~mio/api/repos/deltest/delete", { confirm: "deltes" })).status === 400, "wrong name -> 400, nothing deleted");
+  check((await apiPost("/~mio/api/repos/deltest/delete", { confirm: "DELTEST" })).status === 400, "name is case-sensitive");
   check(git(tmp, "ls-remote", `${BASE}/deltest.git`).code === 0, "…deltest still clonable after refused deletes");
-  const del = await consolePost("/~mio/repos/deltest/delete", { csrf, confirm: "deltest" });
-  check(del.status === 303 && del.headers.get("location") === "/~mio/?done=deleted&name=deltest", "delete with the exact name -> back to console home");
-  check((await (await consoleGet("/~mio/?done=deleted&name=deltest")).text()).includes("已删除仓库「deltest」"), "console home shows the success notice");
+  const del = await apiPost("/~mio/api/repos/deltest/delete", { confirm: "deltest" });
+  check(del.status === 200 && (await del.json()).deleted === "deltest", "delete with the exact name");
   check((await fetch(`${BASE}/deltest.git/info/refs?service=git-upload-pack`)).status === 404, "deleted repo: info/refs 404");
   const dc = git(tmp, "clone", "-q", `${BASE}/deltest.git`, join(tmp, "c-del"));
   check(dc.code !== 0 && /404|not found/i.test(dc.out), "deleted repo: git clone fails (404)");
   check((await fetch(`${BASE}/deltest/`)).status === 404, "deleted repo page 404");
   check(!(await fetch(`${BASE}/api/repos`, { headers: basic(ADMIN_TOKEN) }).then((x) => x.json())).repos.some((x) => x.name === "deltest"), "registry row removed");
+  check(!(await (await fetch(`${BASE}/`)).text()).includes('"deltest"'), "public index no longer lists it (edge list cache dropped)");
   check((await consoleGet("/~mio/repos/deltest")).status === 404, "settings for the deleted repo 404");
   check(git(tmp, "clone", "-q", `${BASE}/mio-cli.git`, join(tmp, "c-cli")).code === 0 && git(tmp, "ls-remote", url(ADMIN_TOKEN, "permtest")).code === 0, "other repositories unaffected");
   check(git(src, "push", "-q", url(ADMIN_TOKEN, "deltest"), "main").code === 0 && git(tmp, "clone", "-q", `${BASE}/deltest.git`, join(tmp, "c-del2")).code === 0, "the name can be re-created by an admin push afterwards");
 
-  console.log("== password change + rate limit");
-  check((await consolePost("/~mio/password", { csrf, current: CONSOLE_PASS, next: "short", confirm: "short" })).status === 400, "short new password refused");
+  console.log("== password change (API) + logout + rate limit");
+  check((await apiPost("/~mio/api/password", { current: CONSOLE_PASS, next: "short", confirm: "short" })).status === 400, "short new password refused");
+  check((await apiPost("/~mio/api/password", { current: "wrong-password-x", next: "abcdefghijklmn", confirm: "abcdefghijklmn" })).status === 400, "wrong current password refused");
+  check((await apiPost("/~mio/api/password", { current: CONSOLE_PASS, next: "abcdefghijklmn", confirm: "abcdefghijklmo" })).status === 400, "mismatched new passwords refused");
   const NEWPASS = randomBytes(15).toString("base64url");
   const oldCookie = cookie;
-  const pc = await consolePost("/~mio/password", { csrf, current: CONSOLE_PASS, next: NEWPASS, confirm: NEWPASS });
+  const pc = await apiPost("/~mio/api/password", { current: CONSOLE_PASS, next: NEWPASS, confirm: NEWPASS });
   takeCookie(pc);
-  check(pc.status === 303 && cookie !== oldCookie, "password changed, fresh session");
-  check((await fetch(`${BASE}/~mio/`, { redirect: "manual", headers: H({ cookie: oldCookie }) })).status === 303, "old session signed out");
-  check((await consoleGet("/~mio/")).status === 200, "new session works");
-  const lo = await consolePost("/~mio/logout", { csrf: csrfOf(await (await consoleGet("/~mio/")).text()) });
-  check(lo.status === 303 && /Max-Age=0/.test(lo.headers.get("set-cookie") ?? ""), "logout clears cookie");
-  check(/mg_signed=; Path=\/; Max-Age=0/.test(lo.headers.get("set-cookie") ?? "") && lo.headers.get("location") === "/", "logout clears the hint cookie and goes to /");
-  const pub = await fetch(`${BASE}/`, { redirect: "manual" });
-  const pubHtml = await pub.text();
-  check(pub.status === 200 && !pubHtml.includes("permtest") && /class='mio-brand' href='\/'/.test(pubHtml), "after logout / is the normal public index again");
+  const pcb = await pc.json();
+  check(pc.status === 200 && cookie !== oldCookie && pcb.csrf && pcb.csrf !== csrfJ, "password changed: fresh session + fresh CSRF token");
+  check((await fetch(`${BASE}/~mio/api/repos`, { headers: H({ cookie: oldCookie }) })).status === 401, "old session signed out");
+  csrfJ = pcb.csrf;
+  check((await apiGet("/~mio/api/repos")).status === 200, "new session works");
+  const lo = await apiPost("/~mio/api/logout", {});
+  check(lo.status === 200 && /mg_admin=; Path=\/~mio\/; Max-Age=0/.test(lo.headers.get("set-cookie") ?? "") && /mg_signed=; Path=\/; Max-Age=0/.test(lo.headers.get("set-cookie") ?? ""), "logout clears the session and the hint cookie");
+  const pubAfter = bootOf(await (await fetch(`${BASE}/`, { redirect: "manual" })).text());
+  check(pubAfter?.signed === false && !JSON.stringify(pubAfter).includes("permtest"), "after logout / is the normal public index again");
   cookie = "";
-  check((await consolePost("/~mio/login", { username: "mio", password: CONSOLE_PASS })).status === 401, "old password no longer works");
+  check((await jl({ username: "mio", password: CONSOLE_PASS })).status === 401, "old password no longer works");
   let locked = false;
-  for (let i = 0; i < 6; i++) {
-    const t = await (await consolePost("/~mio/login", { username: "mio", password: "nope" + i })).text();
-    if (/Too many failed attempts/.test(t)) locked = true;
-  }
-  check(locked, "login locked after repeated failures");
-  const afterLock = await consolePost("/~mio/login", { username: "mio", password: NEWPASS });
-  check(afterLock.status === 401, "correct password also refused while locked");
+  for (let i = 0; i < 6; i++) if ((await jl({ username: "mio", password: "nope" + i })).status === 429) locked = true;
+  check(locked, "API login locked after repeated failures (429)");
+  check((await jl({ username: "mio", password: NEWPASS })).status === 429, "correct password also refused while locked");
+  check(/Too many failed attempts/.test(await (await consolePost("/~mio/login", { username: "mio", password: NEWPASS })).text()), "form login shares the same lock");
 } catch (e) {
   bad(`exception: ${e.stack ?? e}`);
 } finally {

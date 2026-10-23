@@ -27,10 +27,12 @@
   },
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit",
+    "deploy": "npm run build:web && wrangler deploy",
+    "typecheck": "tsc --noEmit && npm --prefix web run typecheck",
     "test": "node --experimental-strip-types --test tests/policy.test.ts",
-    "test:e2e": "node tests/e2e-perms.mjs"
+    "test:e2e": "npm run build:web && node tests/e2e-perms.mjs",
+    "build:web": "npm --prefix web run build",
+    "test:smoke": "node web/scripts/smoke-render.mjs"
   },
   "dependencies": {
     "pako": "^2.1.0"

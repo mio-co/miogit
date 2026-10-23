@@ -44,6 +44,10 @@ export interface Env {
   ACCESS_JWKS?: string;
   /** tests only (never set in production): enables a token lifetime of this many ms ("expires=test") so e2e can watch a token expire */
   TEST_TOKEN_TTL_MS?: string;
+  /** Workers Static Assets (the React frontend, web/dist); absent = server-rendered pages */
+  ASSETS?: Fetcher;
+  /** "0" switches the React frontend off (server-rendered pages again) without a redeploy of code */
+  SPA?: string;
   SITE_NAME?: string;
   SITE_DESC?: string;
   SITE_OWNER?: string;

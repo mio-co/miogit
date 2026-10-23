@@ -1,0 +1,55 @@
+/* ==========================================================================
+   主题色方案 —— 规则：每个主题只能写 --cds-accent 和 --cds-accent-foreground。
+   其他任何变量都不允许出现在这里（scripts/check-themes.mjs 会校验）。
+
+   --cds-accent-foreground 按 WCAG AA（≥4.5:1）选择：
+   白字在陶土 #d97757 上只有 3.12:1，所以 Clay 用深色字（5.85:1）；
+   其余主题浅色模式用白字，深色模式强调色变亮后改用深色字。
+   ========================================================================== */
+
+/* Clay 陶土（默认，Claude 原色；明暗同值） */
+:root,
+html[data-accent='clay'] {
+  --cds-accent: #d97757;
+  --cds-accent-foreground: #151515;
+}
+
+/* Ocean 海蓝 */
+html[data-accent='ocean'] {
+  --cds-accent: #4a6fa5;
+  --cds-accent-foreground: #ffffff;
+}
+html.dark[data-accent='ocean'] {
+  --cds-accent: #6b8fc4;
+  --cds-accent-foreground: #151515;
+}
+
+/* Moss 苔绿 */
+html[data-accent='moss'] {
+  --cds-accent: #5f7f4f;
+  --cds-accent-foreground: #ffffff;
+}
+html.dark[data-accent='moss'] {
+  --cds-accent: #7f9f6c;
+  --cds-accent-foreground: #151515;
+}
+
+/* Plum 梅紫 */
+html[data-accent='plum'] {
+  --cds-accent: #8a5a83;
+  --cds-accent-foreground: #ffffff;
+}
+html.dark[data-accent='plum'] {
+  --cds-accent: #a97ba2;
+  --cds-accent-foreground: #151515;
+}
+
+/* Ink 墨色 */
+html[data-accent='ink'] {
+  --cds-accent: #3d3d3a;
+  --cds-accent-foreground: #ffffff;
+}
+html.dark[data-accent='ink'] {
+  --cds-accent: #e5e4df;
+  --cds-accent-foreground: #151515;
+}

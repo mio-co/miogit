@@ -4,6 +4,18 @@
   "name": "git-cells-test",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
+  // React frontend (web/ -> web/dist). Hashed files live under /~static/ ("~"
+  // never starts a repository name) and are served straight from the edge;
+  // every other request runs the Worker first, which keeps git smart HTTP,
+  // the API, redirects and the console gates exactly as before and answers
+  // frontend pages with index.html (env.ASSETS) plus the first data inlined.
+  "assets": {
+    "directory": "./web/dist",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "none",
+    "run_worker_first": ["/*", "!/~static/*"]
+  },
   "durable_objects": {
     "bindings": [
       { "name": "REPO", "class_name": "RepoCell" },
