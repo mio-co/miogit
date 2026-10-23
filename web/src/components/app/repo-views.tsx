@@ -339,9 +339,9 @@ export function TreeView({ v, c, h }: { v: Extract<View, { kind: 'tree' }>; c: R
       <Card className="overflow-hidden">
         <div className={cardHead}>
           <span className="text-text-secondary tabular-nums">{t(`${v.entries.length} item${v.entries.length === 1 ? '' : 's'}`, `${v.entries.length} 项`)}</span>
-          <LinkButton href={historyHref} variant="ghost" size="xs" startIcon={<ClockCounterClockwise />} className="ms-auto">
-            {t('History', '历史')}
-          </LinkButton>
+          <Button asChild variant="ghost" size="xs" startIcon={<ClockCounterClockwise />} className="ms-auto">
+            <AppLink href={historyHref}>{t('History', '历史')}</AppLink>
+          </Button>
         </div>
         <FileRows c={c} prefix={v.path} entries={v.entries} h={h} up={v.path.length ? `${c.base}/tree/${encPath(v.path.slice(0, -1))}${q(h)}` : undefined} />
       </Card>
@@ -433,9 +433,9 @@ export function BlobView({ v, c, h }: { v: Extract<View, { kind: 'blob' }>; c: R
                   {t('Blame', '追溯')}
                 </LinkButton>
               )}
-              <LinkButton href={historyHref} size="xs">
-                {t('History', '历史')}
-              </LinkButton>
+              <Button asChild size="xs">
+                <AppLink href={historyHref}>{t('History', '历史')}</AppLink>
+              </Button>
             </ButtonGroup>
             <LinkButton href={plain} download={name} variant="ghost" size="xs" icon aria-label={t('Download', '下载')} title={t('Download', '下载')}>
               <DownloadSimple />
@@ -677,9 +677,9 @@ export function RefsView({ v, c }: { v: Extract<View, { kind: 'branches' | 'tags
                       <div className="mt-0.5 text-footnote text-text-secondary">{commitLine(b.commit)}</div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
-                      <LinkButton href={`${c.base}/log/?h=${encodeURIComponent(b.name)}`} variant="ghost" size="xs" startIcon={<ClockCounterClockwise />}>
-                        {t('Commits', '提交')}
-                      </LinkButton>
+                      <Button asChild variant="ghost" size="xs" startIcon={<ClockCounterClockwise />}>
+                        <AppLink href={`${c.base}/log/?h=${encodeURIComponent(b.name)}`}>{t('Commits', '提交')}</AppLink>
+                      </Button>
                       {snap(b.name)}
                     </div>
                   </StaggerItem>
