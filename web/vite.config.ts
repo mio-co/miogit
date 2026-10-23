@@ -10,7 +10,8 @@ export default defineConfig({
   resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
   build: {
     outDir: 'dist',
-    assetsDir: '~static',
+    // hashed files under /~static/a/ get immutable caching (public/_headers); /~static/prefs.js revalidates
+    assetsDir: '~static/a',
     emptyOutDir: true,
     sourcemap: false,
     chunkSizeWarningLimit: 900,

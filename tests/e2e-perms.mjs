@@ -117,7 +117,7 @@ const bootOf = (html) => {
   const m = /<script type="application\/json" id="mio-boot">([\s\S]*?)<\/script>/.exec(html);
   try { return m ? JSON.parse(m[1]) : null; } catch { return null; }
 };
-const isShell = (html) => /<div id="root"><\/div>/.test(html) && /src="\/~static\/[^"]+\.js"/.test(html) && !!bootOf(html);
+const isShell = (html) => /<div id="root"><\/div>/.test(html) && /src="\/~static\/a\/[^"]+\.js"/.test(html) && !!bootOf(html);
 let csrfJ = "";
 async function apiPost(path, body, extra = {}) {
   return fetch(`${BASE}${path}`, {
@@ -152,9 +152,10 @@ try {
   check(idxBoot && idxBoot.signed === false && idxBoot.console === false && idxBoot.data["/api/repos"]?.body?.repos?.some((r) => r.name === "mio-cli"), "boot block carries the public list (no extra request on first paint)");
   check(/script-src 'self'/.test(idx.headers.get("content-security-policy") ?? "") && !/unsafe-eval/.test(idx.headers.get("content-security-policy") ?? ""), "shell keeps the strict CSP (script-src 'self')");
   check(!/<script>/.test(idxHtml) && !/<script(?![^>]*(type="application\/json"|src=))/.test(idxHtml), "no inline executable script in the shell");
-  const asset = /src="(\/~static\/[^"]+\.js)"/.exec(idxHtml)?.[1];
+  const asset = /src="(\/~static\/a\/[^"]+\.js)"/.exec(idxHtml)?.[1];
   const assetRes = asset ? await fetch(`${BASE}${asset}`) : null;
-  check(assetRes?.status === 200 && /javascript/.test(assetRes.headers.get("content-type") ?? ""), "hashed bundle served from /~static/");
+  check(assetRes?.status === 200 && /javascript/.test(assetRes.headers.get("content-type") ?? ""), "hashed bundle served from /~static/a/");
+  check(/immutable/.test(assetRes?.headers.get("cache-control") ?? ""), "hashed bundle cached as immutable (_headers)");
   check((await fetch(`${BASE}/~static/prefs.js`)).status === 200, "prefs boot script served");
   const rp = await fetch(`${BASE}/mio-cli/`);
   const rpHtml = await rp.text();
