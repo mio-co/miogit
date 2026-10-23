@@ -1,0 +1,16 @@
+{
+  // Local test config for tests/e2e-perms.mjs (wrangler dev --local only).
+  // No routes, no secrets: the test passes its own throwaway values via --var.
+  "name": "git-cells-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "REPO", "class_name": "RepoCell" },
+      { "name": "REGISTRY", "class_name": "Registry" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RepoCell", "Registry"] }],
+  "r2_buckets": [{ "binding": "PACK_CACHE", "bucket_name": "dgit-pack-cache-test" }],
+  "vars": { "SITE_NAME": "MioGit", "SITE_OWNER": "mio", "ADMIN_USER": "mio" }
+}

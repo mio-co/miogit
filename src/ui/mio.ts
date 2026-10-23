@@ -256,6 +256,45 @@ html:has([data-dialog-layer]){overflow:hidden}
 @media (prefers-reduced-motion:reduce){.mio-check input,.mio-check input::after{transition:none}}
 .mio-dialog-actions{display:flex;justify-content:flex-end;gap:8px;padding-top:8px}
 @keyframes mio-fade{from{opacity:0}to{opacity:1}}
+/* ---------- /~mio/ 管理台：沿用 mio-dialog / mio-field / mio-btn，只用已有令牌 ---------- */
+.mio-dialog.mio-dialog-md{max-width:520px}
+.mio-dialog-icon.is-danger{color:var(--cds-text-danger);background:color-mix(in srgb,var(--cds-fill-danger) 12%,transparent)}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.mio-dialog .mio-sec{display:flex;flex-direction:column;gap:12px;padding-top:16px;box-shadow:inset 0 var(--cds-ring-hairline) 0 0 var(--cds-border)}
+.mio-dialog h3{margin:0;font-size:13.5px;line-height:1.25rem;font-weight:600;color:var(--cds-text-primary)}
+.mio-field select,.mio-field textarea{font:inherit;font-weight:400;font-size:16px;color:var(--cds-text-primary);background:var(--cds-surface-3);border:0;box-shadow:inset 0 0 0 1px var(--cds-border);
+  border-radius:var(--cds-radius);height:var(--cds-h-control-lg,37.65px);padding:0 12px;width:100%;box-sizing:border-box;transition:box-shadow var(--cds-dur-base) var(--cds-ease-swift)}
+.mio-field textarea{height:auto;min-height:72px;padding:8px 12px;resize:vertical}
+.mio-field select:hover,.mio-field textarea:hover{box-shadow:inset 0 0 0 1px var(--cds-border-strong)}
+.mio-field select:focus-visible,.mio-field textarea:focus-visible{outline:none;box-shadow:var(--cds-focus-shadow)}
+.mio-row{display:flex;gap:8px;align-items:flex-end}
+.mio-row > .mio-field{flex:1;min-width:0}
+.mio-row > .mio-field.mio-narrow{flex:0 0 8.5rem}
+.tk-wrap{overflow-x:auto;margin:0 -4px}
+table.tk{width:100%;min-width:420px;font-size:13px}
+table.tk th{text-align:left;font-weight:500;font-size:12px;color:var(--cds-text-secondary);padding:6px 4px;white-space:nowrap}
+table.tk td{padding:9px 4px;box-shadow:inset 0 var(--cds-ring-hairline) 0 0 var(--cds-border);vertical-align:middle}
+table.tk td.tk-name{font-weight:500;overflow-wrap:anywhere}
+table.tk td.tk-t{color:var(--cds-text-secondary);font-family:var(--font-anthropic-mono);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+table.tk td.tk-act{text-align:right;white-space:nowrap}
+.tk-role{display:inline-block;font-size:11px;line-height:18px;padding:0 8px;border-radius:var(--cds-radius-pill);font-weight:500;background:var(--cds-fill-secondary);color:var(--cds-text-primary)}
+.tk-role[data-role=admin]{background:var(--cds-accent-soft);color:var(--cds-accent-text)}
+.tk-role[data-role=reader]{background:transparent;box-shadow:inset 0 0 0 1px var(--cds-border-strong);color:var(--cds-text-secondary)}
+.tk-empty{color:var(--cds-text-secondary);font-size:13px;padding:8px 0}
+.tk-secret{display:flex;gap:8px;align-items:center}
+.tk-secret input{flex:1;min-width:0;font-family:var(--font-anthropic-mono)!important;font-size:13px!important}
+.mio-note{font-size:12.5px;line-height:1.5;color:var(--cds-text-secondary)}
+.mio-dialog-ok{background:var(--cds-accent-soft);color:var(--cds-accent-text);border-radius:var(--cds-radius);padding:8px 12px;font-size:13px}
+a.mio-btn-danger,button.mio-btn-danger{background:transparent!important;color:var(--cds-text-danger)!important}
+a.mio-btn-danger:hover,button.mio-btn-danger:hover{background:color-mix(in srgb,var(--cds-fill-danger) 10%,transparent)!important}
+button.mio-btn-danger-solid{background:var(--cds-fill-danger-solid)!important;color:#fff!important}
+button.mio-btn-danger-solid:hover{filter:brightness(.95)}
+button.mio-btn-danger-solid:focus-visible{box-shadow:var(--cds-focus-shadow-danger)}
+.ad-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 16px}
+.ad-bar .ad-who{color:var(--cds-text-secondary);font-size:12.5px;margin-right:auto}
+.rl-set{margin-left:auto;font-size:12px;color:var(--cds-text-secondary)}
+.rl-set:hover{color:var(--cds-accent-text)}
+@media (max-width:640px){.mio-dialog{padding:20px}.mio-row{flex-direction:column;align-items:stretch}.mio-row > .mio-field.mio-narrow{flex:1}table.tk td.tk-t.tk-used{display:none}table.tk th.tk-used{display:none}}
 @keyframes mio-dialog-in{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){.mio-backdrop,.mio-dialog{animation:none}}
 .gh-langs{background:var(--cds-surface-2);border-radius:var(--cds-radius-card);box-shadow:var(--cds-panel-shadow);padding:14px 16px}

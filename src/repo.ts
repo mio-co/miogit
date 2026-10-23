@@ -37,6 +37,7 @@ import { blame, BlameHistoryEntry } from "./git/blame";
 import { tarGz, zip, SnapshotFile } from "./git/snapshot";
 import { esc, repoUrl, repoBase, age, fmtDate, fmtDate2822, layout, htmlResponse, errorPage, LayoutOpts, t } from "./ui/html";
 import { renderMarkdown } from "./ui/markdown";
+import { prePushReasons, postPushReason, atomicReasons, isRole, ZERO_OID as POLICY_ZERO, type Principal } from "./policy";
 import { highlightLines } from "./ui/highlight";
 
 const LOG_PAGE = 50;
@@ -158,6 +159,18 @@ interface FileDiff {
   hunks: Hunk[];
   add: number;
   del: number;
+}
+
+/**
+ * The pushing principal, as stamped by the Worker (x-mio-role / x-mio-token).
+ * The Worker always overwrites both headers, so a client cannot choose them.
+ * Absent (a library user calling the cell through their own authorize hook)
+ * means the hook already admitted the push in full: admin.
+ */
+function principalOf(req: Request): Principal {
+  const role = req.headers.get("x-mio-role");
+  if (!isRole(role)) return { role: "admin", id: "hook", name: "hook" };
+  return { role, id: req.headers.get("x-mio-token") ?? "", name: "" };
 }
 
 export class RepoCell extends DurableObject<Env> {
@@ -774,6 +787,32 @@ export class RepoCell extends DurableObject<Env> {
       for (const f of sidebandFrames(2, te.encode(msg))) emit(f);
     };
 
+    // access policy, part 1 (no objects needed): decided BEFORE the pack is
+    // ingested, so a refused push writes nothing — not a ref, not an object
+    const principal = principalOf(req);
+    const ownerOf = (ref: string) => this.store.refOwner(ref);
+    const refused = atomicReasons(
+      prePushReasons(principal, commands, { head: this.store.head(), empty: this.store.refs().length === 0, ownerOf })
+    );
+    if (refused) {
+      console.log(`[receive ${repo}] refused by policy (${principal.role} ${principal.id})`);
+      // drain what the client is still sending (bounded), so it reads our
+      // report instead of a broken pipe; nothing is stored
+      let seen = buf.length;
+      while (reader) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        seen += value?.length ?? 0;
+        if (seen > maxBytes) {
+          try { await reader.cancel(); } catch { /* gone */ }
+          break;
+        }
+      }
+      const results = commands.map((c, i) => ({ ref: c.ref, ok: false, msg: refused[i] }));
+      if (wantStatus) emit(renderStatus(results, null, sideband));
+      return { commitTime: null, updates: [] };
+    }
+
     let firstPackBytes = buf.subarray(pos);
     let hasPack = firstPackBytes.length > 0;
     if (!hasPack && reader) {
@@ -826,9 +865,28 @@ export class RepoCell extends DurableObject<Env> {
     // apply the ref writes under one savepoint — a multi-ref push (git push
     // --all) must not leave half its branches moved if a later update throws
     const plan = await validatePush(this.store, commands, unpackError, packId);
-    const { results, changed, needsGc } = this.ctx.storage.transactionSync(() =>
-      commitPush(this.store, plan)
-    );
+    // access policy, part 2: fast-forward-ness is only known now. Any refusal
+    // refuses the whole push (no ref moves); orphaned objects are left to gc
+    if (principal.role !== "admin") {
+      const post = atomicReasons(
+        plan.decisions.map((d) => (d.reject ? null : postPushReason(principal, d.ref, !!d.forced, ownerOf)))
+      );
+      if (post) plan.decisions = plan.decisions.map((d, i) => (d.reject ? d : { ...d, reject: post[i] }));
+    }
+    const { results, changed, needsGc } = this.ctx.storage.transactionSync(() => {
+      const out = commitPush(this.store, plan);
+      // branch ownership (lets a writer delete / force-push only its own
+      // branches), written in the same savepoint as the ref moves
+      commands.forEach((c, i) => {
+        if (out.results[i]?.ok !== true) return;
+        if (c.next === POLICY_ZERO) this.store.delRefOwner(c.ref);
+        else if (c.old === POLICY_ZERO) {
+          if (principal.role === "writer") this.store.setRefOwner(c.ref, principal.id);
+          else this.store.delRefOwner(c.ref);
+        }
+      });
+      return out;
+    });
     let commitTime: number | null = null;
     if (changed) {
       this.store.setMeta("created", "1");
@@ -867,7 +925,7 @@ export class RepoCell extends DurableObject<Env> {
       .slice(0, 50);
     const headBranch = this.store.head().replace("refs/heads/", "");
     return {
-      site: this.env.SITE_NAME ?? "MioHub",
+      site: this.env.SITE_NAME ?? "MioGit",
       siteDesc: this.env.SITE_DESC ?? "",
       title: `${repo} - ${tab}`,
       repo,

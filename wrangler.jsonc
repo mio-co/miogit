@@ -7,7 +7,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
   "routes": [
-    { "pattern": "miohub.300031.xyz", "custom_domain": true }
+    { "pattern": "miogit.300031.xyz", "custom_domain": true }
   ],
   "durable_objects": {
     "bindings": [
@@ -25,10 +25,20 @@
     { "binding": "PACK_CACHE", "bucket_name": "dgit-pack-cache" }
   ],
   "vars": {
-    "SITE_NAME": "MioHub",
-    "CANONICAL_HOST": "miohub.300031.xyz",
+    "SITE_NAME": "MioGit",
+    "CANONICAL_HOST": "miogit.300031.xyz",
     "SITE_DESC": "",
-    "SITE_OWNER": "mio"
+    "SITE_OWNER": "mio",
+    // web console (/~mio/): username; the password hash is the ADMIN_PASSWORD_HASH secret
+    "ADMIN_USER": "mio",
+    // Cloudflare Access application protecting miogit.300031.xyz/~mio/ (JWT re-verified in the Worker)
+    "ACCESS_TEAM_DOMAIN": "sakune.cloudflareaccess.com",
+    "ACCESS_AUD": ""
   }
-  // Push auth: run `wrangler secret put GIT_TOKEN` (use .dev.vars locally).
+  // Secrets (wrangler secret put …; .dev.vars locally):
+  //   GIT_TOKEN            admin git token (the original push password)
+  //   ADMIN_PASSWORD_HASH  console password, "pbkdf2-sha256$100000$<salt>$<hash>"
+  //                        (node scripts/hash-password.mjs prints one)
+  // Per-assistant git tokens are created in the console (/~mio/tokens) and
+  // stored as SHA-256 hashes in the Registry Durable Object.
 }

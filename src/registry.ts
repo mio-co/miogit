@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
+import { isRole, type Role } from "./policy";
 
 export type RepoInfo = {
   name: string;
@@ -18,6 +19,22 @@ export type RepoInfo = {
   /** pack bytes kept in R2 */
   r2_bytes: number;
 };
+
+/** A per-assistant access token. Only the SHA-256 of the secret is stored. */
+export type TokenRow = {
+  id: string;
+  name: string;
+  role: Role;
+  created: number;
+  last_used: number;
+};
+
+/** last_used is refreshed at most this often per token (each refresh is a DO row write) */
+const TOKEN_TOUCH_MS = 10 * 60 * 1000;
+
+/** console login: this many failures per IP per window, then locked until the window ends */
+const LOGIN_MAX_FAILS = 5;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
 export type RepoConfig = {
   desc?: string;
@@ -39,6 +56,28 @@ export class Registry extends DurableObject<Env> {
         priv INTEGER NOT NULL DEFAULT 0,
         idle INTEGER NOT NULL DEFAULT 0,
         ver INTEGER NOT NULL DEFAULT 1
+      );
+    `);
+    ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS tokens (
+        id TEXT PRIMARY KEY,
+        hash TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        role TEXT NOT NULL,
+        created INTEGER NOT NULL,
+        last_used INTEGER NOT NULL DEFAULT 0,
+        revoked INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS login_fail (
+        ip TEXT PRIMARY KEY,
+        count INTEGER NOT NULL,
+        reset_at INTEGER NOT NULL
       );
     `);
     // upgrade path for databases created by earlier versions
@@ -115,5 +154,99 @@ export class Registry extends DurableObject<Env> {
         limit
       )
       .toArray();
+  }
+
+  // ---- access tokens -------------------------------------------------------
+
+  /**
+   * Resolve a token by the SHA-256 (hex) of its secret. Revoked tokens never
+   * match, so revocation takes effect on the very next request. Refreshes
+   * last_used, throttled to one write per token per TOKEN_TOUCH_MS.
+   */
+  authToken(hash: string, now = Date.now()): TokenRow | null {
+    const row = this.ctx.storage.sql
+      .exec<TokenRow>("SELECT id, name, role, created, last_used FROM tokens WHERE hash = ? AND revoked = 0", hash)
+      .toArray()[0];
+    if (!row || !isRole(row.role)) return null;
+    if (now - row.last_used > TOKEN_TOUCH_MS) {
+      this.ctx.storage.sql.exec("UPDATE tokens SET last_used = ? WHERE id = ?", now, row.id);
+      row.last_used = now;
+    }
+    return row;
+  }
+
+  /** Active token by id (sessions re-check their token on every request). */
+  tokenById(id: string): TokenRow | null {
+    const row = this.ctx.storage.sql
+      .exec<TokenRow>("SELECT id, name, role, created, last_used FROM tokens WHERE id = ? AND revoked = 0", id)
+      .toArray()[0];
+    return row && isRole(row.role) ? row : null;
+  }
+
+  listTokens(): TokenRow[] {
+    return this.ctx.storage.sql
+      .exec<TokenRow>("SELECT id, name, role, created, last_used FROM tokens WHERE revoked = 0 ORDER BY created DESC LIMIT 500")
+      .toArray();
+  }
+
+  createToken(id: string, hash: string, name: string, role: Role, now = Date.now()): TokenRow {
+    if (!isRole(role)) throw new Error("bad role");
+    this.ctx.storage.sql.exec(
+      "INSERT INTO tokens (id, hash, name, role, created, last_used, revoked) VALUES (?, ?, ?, ?, ?, 0, 0)",
+      id,
+      hash,
+      name,
+      role,
+      now
+    );
+    return { id, name, role, created: now, last_used: 0 };
+  }
+
+  /** Revoke (kept as a tombstone so the id is never reused); true if it was active. */
+  revokeToken(id: string): boolean {
+    const cur = this.tokenById(id);
+    if (!cur) return false;
+    this.ctx.storage.sql.exec("UPDATE tokens SET revoked = ? WHERE id = ?", Date.now(), id);
+    return true;
+  }
+
+  // ---- console settings / login throttle -----------------------------------
+
+  getSetting(key: string): string | null {
+    return this.ctx.storage.sql.exec<{ value: string }>("SELECT value FROM settings WHERE key = ?", key).toArray()[0]?.value ?? null;
+  }
+
+  setSetting(key: string, value: string): void {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      key,
+      value
+    );
+  }
+
+  /** ms until this IP may try again (0 = allowed). Shared by every isolate, unlike an in-memory map. */
+  loginBlocked(ip: string, now = Date.now()): number {
+    const r = this.ctx.storage.sql.exec<{ count: number; reset_at: number }>("SELECT count, reset_at FROM login_fail WHERE ip = ?", ip).toArray()[0];
+    if (!r || r.reset_at <= now) return 0;
+    return r.count >= LOGIN_MAX_FAILS ? r.reset_at - now : 0;
+  }
+
+  loginFailed(ip: string, now = Date.now()): void {
+    const r = this.ctx.storage.sql.exec<{ count: number; reset_at: number }>("SELECT count, reset_at FROM login_fail WHERE ip = ?", ip).toArray()[0];
+    if (!r || r.reset_at <= now) {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO login_fail (ip, count, reset_at) VALUES (?, 1, ?) ON CONFLICT(ip) DO UPDATE SET count = 1, reset_at = excluded.reset_at",
+        ip,
+        now + LOGIN_WINDOW_MS
+      );
+    } else {
+      this.ctx.storage.sql.exec("UPDATE login_fail SET count = count + 1 WHERE ip = ?", ip);
+    }
+    // bounded: drop expired rows now and then
+    if (Math.random() < 0.05) this.ctx.storage.sql.exec("DELETE FROM login_fail WHERE reset_at <= ?", now);
+  }
+
+  loginSucceeded(ip: string): void {
+    this.ctx.storage.sql.exec("DELETE FROM login_fail WHERE ip = ?", ip);
   }
 }

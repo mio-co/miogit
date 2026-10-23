@@ -1,5 +1,5 @@
 {
-  "name": "miohub",
+  "name": "miogit",
   "version": "0.0.8",
   "description": "Durable git: a git server as a Cloudflare Durable Object. Smart HTTP, a cgit-style web interface, pluggable auth, push events, and a typed content API.",
   "type": "module",
@@ -28,7 +28,9 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/policy.test.ts",
+    "test:e2e": "node tests/e2e-perms.mjs"
   },
   "dependencies": {
     "pako": "^2.1.0"

@@ -1,0 +1,487 @@
+/**
+ * The web console under /~mio/ — sign-in, token management, password change,
+ * repository settings and the web editor. One Cloudflare Access application
+ * on "<host>/~mio/" covers all of it; every request here is additionally
+ * checked against the Access JWT inside the Worker (fail closed), then against
+ * the console session (username + PBKDF2 password, cookie Path=/~mio/,
+ * SameSite=Strict), and every state change carries a CSRF token plus an
+ * Origin check.
+ *
+ * "~" can never start a repository name, so nothing here can shadow a repo.
+ */
+import type { Env } from "./env";
+import type { RepoInfo, TokenRow } from "./registry";
+import { esc, repoUrl, layout, htmlResponse, t } from "./ui/html";
+import {
+  adminPasswordHash,
+  adminUser,
+  clearSessionCookie,
+  csrfToken,
+  csrfValid,
+  hashPassword,
+  makeSession,
+  newTokenId,
+  newTokenSecret,
+  sameOrigin,
+  secretsEqual,
+  sessionCookie,
+  sha256Hex,
+  validSession,
+  verifyAccess,
+  verifyPassword,
+} from "./auth";
+import { isRole, type Role } from "./policy";
+
+export const CONSOLE = "/~mio";
+
+export interface ConsoleDeps {
+  siteBase: (env: Env) => { site: string; siteDesc: string; title: string; sub: string; tab: string };
+  /** the repository list, signed-in flavour (stats, private repos), with optional per-row settings links */
+  indexBody: (env: Env, signedIn: boolean, settings?: boolean) => Promise<string>;
+  /** tell the Worker's per-isolate registry memo that a repo changed */
+  invalidate: (repo: string) => void;
+}
+
+const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const LOCK = `<svg viewBox='0 0 256 256' aria-hidden='true'><rect x='40' y='88' width='176' height='128' rx='8' fill='none' stroke='currentColor' stroke-width='16'/><path d='M88 88V56a40 40 0 0 1 80 0v32' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
+const KEY = `<svg viewBox='0 0 256 256' aria-hidden='true'><circle cx='92' cy='164' r='44' fill='none' stroke='currentColor' stroke-width='16'/><path d='M123 133l85-85M176 80l24 24M152 104l20 20' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
+const GEAR = `<svg viewBox='0 0 256 256' aria-hidden='true'><circle cx='128' cy='128' r='40' fill='none' stroke='currentColor' stroke-width='16'/><path d='M128 24v24M128 208v24M24 128h24M208 128h24M54 54l17 17M185 185l17 17M54 202l17-17M185 71l17-17' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
+const WARN = `<svg viewBox='0 0 256 256' aria-hidden='true'><path d='M128 32 16 216h224Z' fill='none' stroke='currentColor' stroke-width='16' stroke-linejoin='round'/><path d='M128 104v48' stroke='currentColor' stroke-width='16' stroke-linecap='round'/><circle cx='128' cy='184' r='10' fill='currentColor'/></svg>`;
+
+const ROLE_LABEL: Record<Role, [string, string]> = {
+  admin: ["Admin", "管理员"],
+  writer: ["Writer", "写入"],
+  reader: ["Reader", "只读"],
+};
+
+function noStore(res: Response): Response {
+  res.headers.set("cache-control", "no-store");
+  return res;
+}
+
+function redirect(to: string, cookie?: string): Response {
+  const h = new Headers({ location: to, "cache-control": "no-store" });
+  if (cookie) h.append("set-cookie", cookie);
+  return new Response(null, { status: 303, headers: h });
+}
+
+function text(msg: string, status: number): Response {
+  return noStore(new Response(msg.endsWith("\n") ? msg : msg + "\n", { status, headers: { "content-type": "text/plain; charset=utf-8" } }));
+}
+
+/** Only console paths (or the site root) are acceptable post-login destinations. */
+function safeNext(n: string | null): string {
+  return n && (n === "/" || n.startsWith(`${CONSOLE}/`)) && !n.startsWith("//") && !n.includes("\\") ? n : `${CONSOLE}/`;
+}
+
+function clientIp(req: Request): string {
+  return req.headers.get("cf-connecting-ip") ?? req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+}
+
+function fmtTime(ms: number): string {
+  if (!ms) return "—";
+  return new Date(ms).toISOString().slice(0, 16).replace("T", " ");
+}
+
+interface DialogOpts {
+  icon: string;
+  title: string;
+  desc?: string;
+  body: string;
+  cancel: string;
+  wide?: boolean;
+  /** render the dialog itself as this form (action) */
+  formAction?: string;
+  danger?: boolean;
+}
+
+function dialog(o: DialogOpts): string {
+  const tag = o.formAction ? "form" : "div";
+  const formAttrs = o.formAction ? ` method='post' action='${esc(o.formAction)}'` : "";
+  return `
+<div class='mio-dialog-layer' data-dialog-layer>
+<div class='mio-backdrop'></div>
+<${tag} class='mio-dialog${o.wide ? " mio-dialog-md" : ""}' role='dialog' aria-modal='true' aria-labelledby='dlg-t'${o.desc ? " aria-describedby='dlg-d'" : ""}${formAttrs} data-cancel='${esc(o.cancel)}'>
+  <div class='mio-dialog-icon${o.danger ? " is-danger" : ""}'>${o.icon}</div>
+  <h2 id='dlg-t'>${o.title}</h2>
+  ${o.desc ? `<p id='dlg-d'>${o.desc}</p>` : ""}
+  ${o.body}
+</${tag}>
+</div>`;
+}
+
+export function createConsole(deps: ConsoleDeps) {
+  /** console page = the signed-in repository list behind, the dialog in front */
+  async function page(env: Env, overlay: string, status = 200, behindSignedIn = true): Promise<Response> {
+    const behind = `<div class='mio-behind' inert aria-hidden='true'>${await deps.indexBody(env, behindSignedIn).catch(() => "")}</div>`;
+    return noStore(htmlResponse(layout({ ...deps.siteBase(env), tab: "login-bg", body: behind, overlay }), status));
+  }
+
+  async function home(env: Env, csrf: string, notice = ""): Promise<Response> {
+    const bar =
+      `<div class='ad-bar'><span class='ad-who'>${t("Signed in as", "已登录：")} <b>${esc(adminUser(env))}</b></span>` +
+      `<a class='mio-btn mio-btn-secondary' href='${CONSOLE}/tokens'>${t("Access tokens", "访问令牌")}</a>` +
+      `<a class='mio-btn mio-btn-ghost' href='${CONSOLE}/password'>${t("Change password", "修改密码")}</a>` +
+      `<form method='post' action='${CONSOLE}/logout' class='mio-auth'><input type='hidden' name='csrf' value='${esc(csrf)}'/><button type='submit' class='mio-btn mio-btn-ghost'>${t("Sign out", "退出")}</button></form></div>` +
+      (notice ? `<div class='mio-dialog-ok' role='status' style='margin:0 0 16px'>${notice}</div>` : "");
+    const body = bar + (await deps.indexBody(env, true, true));
+    return noStore(htmlResponse(layout({ ...deps.siteBase(env), title: `${deps.siteBase(env).site} · console`, body })));
+  }
+
+  async function loginPage(env: Env, next: string, error = "", user = ""): Promise<Response> {
+    const body = `
+  ${error ? `<div class='mio-dialog-err' role='alert'>${error}</div>` : ""}
+  <input type='hidden' name='next' value='${esc(next)}'/>
+  <label class='mio-field'><span>${t("Username", "用户名")}</span><input type='text' name='username' value='${esc(user)}' autocomplete='username' autocapitalize='off' spellcheck='false' required${user ? "" : " autofocus"}/></label>
+  <label class='mio-field'><span>${t("Password", "密码")}</span><input type='password' name='password' autocomplete='current-password' required${user ? " autofocus" : ""}${error ? " aria-invalid='true'" : ""}/></label>
+  <div class='mio-dialog-actions'>
+    <a class='mio-btn mio-btn-secondary mio-btn-md' href='/' data-dialog-cancel>${t("Cancel", "取消")}</a>
+    <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Sign in", "登录")}</button>
+  </div>`;
+    return page(
+      env,
+      dialog({
+        icon: LOCK,
+        title: t("Sign in to the MioGit console", "登录 MioGit 管理台"),
+        desc: t("Use the console account. Git access tokens cannot sign in here.", "使用管理台账号登录。git 访问令牌不能用于登录网页。"),
+        body,
+        cancel: "/",
+        formAction: `${CONSOLE}/login`,
+      }),
+      error ? 401 : 200,
+      false
+    );
+  }
+
+  async function tokensPage(env: Env, csrf: string, opts: { error?: string; created?: { row: TokenRow; secret: string } } = {}): Promise<Response> {
+    const registry = env.REGISTRY.getByName("registry");
+    if (opts.created) {
+      const { row, secret } = opts.created;
+      const body = `
+  <div class='mio-dialog-ok' role='status'>${t(`Token “${row.name}” (${ROLE_LABEL[row.role][0]}) created.`, `已创建令牌「${row.name}」（${ROLE_LABEL[row.role][1]}）。`)}</div>
+  <label class='mio-field'><span>${t("Token — copy it now, it will not be shown again", "令牌明文：现在复制，关闭后不会再显示")}</span>
+    <span class='tk-secret'><input type='text' readonly value='${esc(secret)}' aria-label='token' autocomplete='off' spellcheck='false' data-noi18n/><button type='button' class='mio-btn mio-btn-secondary mio-btn-md' data-copy='${esc(secret)}'>${t("Copy", "复制")}</button></span></label>
+  <p class='mio-note' style='margin:0'>${t("Use it as the HTTP password for git (any username), e.g. git clone https://<user>:<token>@host/repo.git. Only its SHA-256 hash is stored.", "在 git 里作为 HTTP 密码使用（用户名随意）。服务器只保存它的 SHA-256 哈希。")}</p>
+  <div class='mio-dialog-actions'><a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/tokens'>${t("Done", "完成")}</a></div>`;
+      return page(env, dialog({ icon: KEY, title: t("Copy your new token", "复制新令牌"), body, cancel: `${CONSOLE}/tokens`, wide: true }));
+    }
+    const rows = await registry.listTokens();
+    const table = rows.length
+      ? `<div class='tk-wrap'><table class='tk'><thead><tr><th>${t("Name", "名称")}</th><th>${t("Role", "角色")}</th><th>${t("Created", "创建时间")}</th><th class='tk-used'>${t("Last used", "最近使用")}</th><th><span class='sr-only'>${t("Actions", "操作")}</span></th></tr></thead><tbody>` +
+        rows
+          .map(
+            (r) =>
+              `<tr><td class='tk-name' data-noi18n>${esc(r.name)}</td><td><span class='tk-role' data-role='${r.role}'>${t(ROLE_LABEL[r.role][0], ROLE_LABEL[r.role][1])}</span></td>` +
+              `<td class='tk-t'>${fmtTime(r.created)}</td><td class='tk-t tk-used'>${r.last_used ? fmtTime(r.last_used) : t("Never", "从未")}</td>` +
+              `<td class='tk-act'><a class='mio-btn mio-btn-danger' href='${CONSOLE}/tokens/${encodeURIComponent(r.id)}/revoke'>${t("Revoke", "吊销")}</a></td></tr>`
+          )
+          .join("") +
+        `</tbody></table></div>`
+      : `<div class='tk-empty'>${t("No tokens yet. The original push password keeps working as an admin token.", "还没有令牌。原来的推送密码继续作为管理员令牌有效。")}</div>`;
+    const body = `
+  ${opts.error ? `<div class='mio-dialog-err' role='alert'>${opts.error}</div>` : ""}
+  ${table}
+  <form class='mio-sec' method='post' action='${CONSOLE}/tokens'>
+    <h3>${t("New token", "新建令牌")}</h3>
+    <input type='hidden' name='csrf' value='${esc(csrf)}'/>
+    <div class='mio-row'>
+      <label class='mio-field'><span>${t("Name", "名称")}</span><input type='text' name='name' maxlength='64' required placeholder='hark6' autocomplete='off' spellcheck='false'/></label>
+      <label class='mio-field mio-narrow'><span>${t("Role", "角色")}</span><select name='role'>
+        <option value='writer'>${ROLE_LABEL.writer[1]} writer</option><option value='reader'>${ROLE_LABEL.reader[1]} reader</option><option value='admin'>${ROLE_LABEL.admin[1]} admin</option></select></label>
+    </div>
+    <p class='mio-note' style='margin:0'>${t("Writer: read everything, push branches other than main; no tags, no new repositories. Reader: read only.", "写入：可读全部仓库，可推送 main 以外的分支，不能推标签、不能建仓库。只读：只能拉取。")}</p>
+    <div class='mio-dialog-actions'>
+      <a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/' data-dialog-cancel>${t("Close", "关闭")}</a>
+      <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Create token", "创建令牌")}</button>
+    </div>
+  </form>`;
+    return page(
+      env,
+      dialog({
+        icon: KEY,
+        title: t("Access tokens", "访问令牌"),
+        desc: t("One token per assistant. Revoking takes effect immediately.", "每个助手一个令牌，吊销立即生效。"),
+        body,
+        cancel: `${CONSOLE}/`,
+        wide: true,
+      }),
+      opts.error ? 400 : 200
+    );
+  }
+
+  async function revokePage(env: Env, csrf: string, row: TokenRow): Promise<Response> {
+    const body = `
+  <input type='hidden' name='csrf' value='${esc(csrf)}'/>
+  <div class='mio-dialog-actions'>
+    <a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/tokens' data-dialog-cancel>${t("Cancel", "取消")}</a>
+    <button type='submit' class='mio-btn mio-btn-danger-solid mio-btn-md'>${t("Revoke", "吊销")}</button>
+  </div>`;
+    return page(
+      env,
+      dialog({
+        icon: WARN,
+        danger: true,
+        title: t(`Revoke “${row.name}”?`, `吊销「${row.name}」？`),
+        desc: t("Every git request with this token fails from now on. This cannot be undone; create a new token instead.", "之后所有使用这个令牌的 git 请求都会失败。不能撤销，需要时请新建令牌。"),
+        body,
+        cancel: `${CONSOLE}/tokens`,
+        formAction: `${CONSOLE}/tokens/${encodeURIComponent(row.id)}/revoke`,
+      })
+    );
+  }
+
+  async function passwordPage(env: Env, csrf: string, error = ""): Promise<Response> {
+    const body = `
+  ${error ? `<div class='mio-dialog-err' role='alert'>${error}</div>` : ""}
+  <input type='hidden' name='csrf' value='${esc(csrf)}'/>
+  <input type='text' name='username' value='${esc(adminUser(env))}' autocomplete='username' hidden readonly tabindex='-1' aria-hidden='true'/>
+  <label class='mio-field'><span>${t("Current password", "当前密码")}</span><input type='password' name='current' autocomplete='current-password' required autofocus/></label>
+  <label class='mio-field'><span>${t("New password (at least 12 characters)", "新密码（至少 12 位）")}</span><input type='password' name='next' autocomplete='new-password' minlength='12' required/></label>
+  <label class='mio-field'><span>${t("Repeat new password", "再次输入新密码")}</span><input type='password' name='confirm' autocomplete='new-password' minlength='12' required/></label>
+  <div class='mio-dialog-actions'>
+    <a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/' data-dialog-cancel>${t("Cancel", "取消")}</a>
+    <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Change password", "修改密码")}</button>
+  </div>`;
+    return page(
+      env,
+      dialog({
+        icon: LOCK,
+        title: t("Change console password", "修改管理台密码"),
+        desc: t("Other signed-in browsers are signed out.", "修改后，其他已登录的浏览器会退出登录。"),
+        body,
+        cancel: `${CONSOLE}/`,
+        formAction: `${CONSOLE}/password`,
+      }),
+      error ? 400 : 200
+    );
+  }
+
+  async function repoSettingsPage(env: Env, csrf: string, info: RepoInfo, error = ""): Promise<Response> {
+    const body = `
+  ${error ? `<div class='mio-dialog-err' role='alert'>${error}</div>` : ""}
+  <input type='hidden' name='csrf' value='${esc(csrf)}'/>
+  <label class='mio-field'><span>${t("Description", "描述")}</span><textarea name='description' maxlength='500' rows='2'>${esc(info.desc)}</textarea></label>
+  <div class='mio-row'>
+    <label class='mio-field'><span>${t("Owner", "所有者")}</span><input type='text' name='owner' maxlength='64' value='${esc(info.owner)}' autocomplete='off'/></label>
+    <label class='mio-field'><span>${t("Section", "分组")}</span><input type='text' name='section' maxlength='64' value='${esc(info.section)}' autocomplete='off'/></label>
+  </div>
+  <label class='mio-check'><input type='checkbox' name='private' value='1'${info.priv ? " checked" : ""}/><span>${t("Private (requires a token to read)", "私有（需要令牌才能读取）")}</span></label>
+  <div class='mio-dialog-actions'>
+    <a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/' data-dialog-cancel>${t("Cancel", "取消")}</a>
+    <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Save", "保存")}</button>
+  </div>`;
+    return page(
+      env,
+      dialog({
+        icon: GEAR,
+        title: `<span data-noi18n>${esc(info.name)}</span> · ${t("Settings", "仓库设置")}`,
+        body,
+        cancel: `${CONSOLE}/`,
+        formAction: `${CONSOLE}/repos/${repoUrl(info.name)}`,
+      }),
+      error ? 400 : 200
+    );
+  }
+
+  /** Forward a web-editor request to the repository cell, with the console's own form action + CSRF token. */
+  async function editor(req: Request, env: Env, repo: string, sub: string, csrf: string, session: string, passHash: string): Promise<Response> {
+    const url = new URL(req.url);
+    const doUrl = new URL(req.url);
+    doUrl.pathname = sub;
+    const headers = new Headers(req.headers);
+    headers.set("x-repo", repo);
+    headers.set("x-host", url.host);
+    headers.set("x-proto", url.protocol.replace(":", ""));
+    headers.set("x-mio-role", "admin");
+    headers.set("x-mio-token", "console");
+    let body: BodyInit | null = null;
+    if (req.method === "POST") {
+      const raw = await req.text();
+      const form = new URLSearchParams(raw);
+      if (!(await csrfValid(env, passHash, session, form.get("csrf")))) return text("bad CSRF token", 403);
+      body = raw;
+    }
+    const res = await env.REPO.getByName(repo).fetch(new Request(doUrl.toString(), { method: req.method, headers, body }));
+    if (req.method === "POST" && res.headers.has("x-location")) {
+      if (res.headers.get("x-changed") === "1") {
+        const idle = parseInt(res.headers.get("x-commit-time") ?? "", 10) || Date.now();
+        try {
+          const registry = env.REGISTRY.getByName("registry");
+          await registry.upsert(repo, idle, res.headers.get("x-main-lang") ?? undefined);
+        } catch {
+          // registry deferred; next push heals
+        }
+        deps.invalidate(repo);
+      }
+      return redirect(res.headers.get("x-location")!);
+    }
+    if (typeof HTMLRewriter === "undefined" || !(res.headers.get("content-type") ?? "").startsWith("text/html")) return noStore(new Response(res.body, res));
+    const out = new HTMLRewriter()
+      .on("#ed-form", {
+        element(e) {
+          e.setAttribute("action", `${CONSOLE}/edit/${repoUrl(repo)}`);
+          e.prepend(`<input type='hidden' name='csrf' value='${esc(csrf)}'/>`, { html: true });
+        },
+      })
+      .transform(res);
+    return noStore(new Response(out.body, out));
+  }
+
+  /** Entry point for every path under /~mio (and /~mio itself). */
+  async function handle(req: Request, env: Env): Promise<Response> {
+    const url = new URL(req.url);
+    const path = url.pathname;
+    if (path === CONSOLE) return redirect(`${CONSOLE}/`);
+
+    // 1. Cloudflare Access, verified here too (fail closed): a mis-scoped
+    //    Access rule must not leave the console reachable
+    const access = await verifyAccess(req, env);
+    if (!access.ok) return text(access.why, access.status);
+
+    // 2. state-changing requests must be same-origin
+    const mutating = req.method !== "GET" && req.method !== "HEAD";
+    if (mutating && !sameOrigin(req)) return text("cross-site request refused", 403);
+    if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "POST") return text("method not allowed", 405);
+
+    const registry = env.REGISTRY.getByName("registry");
+    const passHash = await adminPasswordHash(env);
+    const session = await validSession(req, env, passHash);
+    const sub = path.slice(CONSOLE.length); // starts with "/"
+
+    // ---- sign-in ----
+    if (sub === "/login") {
+      if (req.method === "GET") {
+        const next = safeNext(url.searchParams.get("next"));
+        return session ? redirect(next) : loginPage(env, next);
+      }
+      const ip = clientIp(req);
+      const form = await req.formData().catch(() => null);
+      const next = safeNext((form?.get("next") as string | null) ?? null);
+      const user = String(form?.get("username") ?? "");
+      const pass = String(form?.get("password") ?? "");
+      if (!passHash) return loginPage(env, next, t("The console password is not configured (ADMIN_PASSWORD_HASH).", "管理台密码未配置（ADMIN_PASSWORD_HASH）。"), user);
+      const wait = await registry.loginBlocked(ip);
+      if (wait > 0) return loginPage(env, next, t(`Too many failed attempts. Try again in ${Math.ceil(wait / 60000)} min.`, `失败次数过多，请 ${Math.ceil(wait / 60000)} 分钟后再试。`), user);
+      // always run both checks (no early exit on a wrong username)
+      const userOk = await secretsEqual(user, adminUser(env));
+      const passOk = await verifyPassword(pass, passHash);
+      if (!userOk || !passOk) {
+        await registry.loginFailed(ip);
+        return loginPage(env, next, t("Wrong username or password.", "用户名或密码不正确。"), user);
+      }
+      await registry.loginSucceeded(ip);
+      return redirect(next, sessionCookie(await makeSession(env, passHash)));
+    }
+
+    if (!session || !passHash) {
+      if (req.method === "GET") return redirect(`${CONSOLE}/login?next=${encodeURIComponent(path + url.search)}`);
+      return text("sign in required", 401);
+    }
+    const csrf = await csrfToken(env, passHash, session);
+
+    // every POST below needs the CSRF token (the editor checks its own)
+    let form: FormData | null = null;
+    if (req.method === "POST" && !sub.startsWith("/edit/")) {
+      form = await req.formData().catch(() => null);
+      if (!(await csrfValid(env, passHash, session, (form?.get("csrf") as string | null) ?? null))) return text("bad CSRF token", 403);
+    }
+
+    if (sub === "/logout" && req.method === "POST") return redirect("/", clearSessionCookie());
+    if (sub === "/" && req.method === "GET") {
+      const n = url.searchParams.get("done");
+      return home(env, csrf, n === "password" ? t("Password changed.", "密码已修改。") : n === "settings" ? t("Settings saved.", "设置已保存。") : "");
+    }
+
+    // ---- tokens ----
+    if (sub === "/tokens") {
+      if (req.method === "GET") return tokensPage(env, csrf);
+      const name = String(form!.get("name") ?? "").trim();
+      const role = String(form!.get("role") ?? "");
+      if (!name || name.length > 64 || /[\x00-\x1f\x7f]/.test(name)) return tokensPage(env, csrf, { error: t("Name must be 1–64 characters.", "名称需为 1–64 个字符。") });
+      if (!isRole(role)) return tokensPage(env, csrf, { error: t("Unknown role.", "未知角色。") });
+      const secret = newTokenSecret();
+      const row = await registry.createToken(newTokenId(), await sha256Hex(secret), name, role);
+      return tokensPage(env, csrf, { created: { row, secret } });
+    }
+    const rv = /^\/tokens\/([A-Za-z0-9_-]{1,40})\/revoke$/.exec(sub);
+    if (rv) {
+      const row = await registry.tokenById(rv[1]);
+      if (req.method === "GET") return row ? revokePage(env, csrf, row) : redirect(`${CONSOLE}/tokens`);
+      if (row) await registry.revokeToken(row.id);
+      return redirect(`${CONSOLE}/tokens`);
+    }
+
+    // ---- password ----
+    if (sub === "/password") {
+      if (req.method === "GET") return passwordPage(env, csrf);
+      const cur = String(form!.get("current") ?? "");
+      const next = String(form!.get("next") ?? "");
+      const confirm = String(form!.get("confirm") ?? "");
+      const ip = clientIp(req);
+      if ((await registry.loginBlocked(ip)) > 0) return passwordPage(env, csrf, t("Too many failed attempts. Try again later.", "失败次数过多，请稍后再试。"));
+      if (!(await verifyPassword(cur, passHash))) {
+        await registry.loginFailed(ip);
+        return passwordPage(env, csrf, t("Current password is wrong.", "当前密码不正确。"));
+      }
+      if (next.length < 12 || next.length > 256) return passwordPage(env, csrf, t("The new password needs 12–256 characters.", "新密码需为 12–256 位。"));
+      if (next !== confirm) return passwordPage(env, csrf, t("The two new passwords differ.", "两次输入的新密码不一致。"));
+      const h = await hashPassword(next);
+      await registry.setSetting("admin_password_hash", h);
+      // the session key is bound to the hash: everyone else is signed out, this browser gets a fresh cookie
+      return redirect(`${CONSOLE}/?done=password`, sessionCookie(await makeSession(env, h)));
+    }
+
+    // ---- repository settings ----
+    const rs = /^\/repos\/([^/]+)$/.exec(sub);
+    if (rs) {
+      let name: string;
+      try {
+        name = decodeURIComponent(rs[1]);
+      } catch {
+        return text("bad repository name", 400);
+      }
+      if (!REPO_NAME.test(name)) return text("bad repository name", 400);
+      const info = await registry.get(name);
+      if (!info) return text(`no such repository: ${name}`, 404);
+      if (req.method === "GET") return repoSettingsPage(env, csrf, info);
+      const cfg = {
+        description: String(form!.get("description") ?? "").trim().slice(0, 500),
+        owner: String(form!.get("owner") ?? "").trim().slice(0, 64),
+        section: String(form!.get("section") ?? "").trim().slice(0, 64),
+        private: form!.get("private") === "1",
+      };
+      const res = await env.REPO.getByName(name).fetch(
+        new Request(`${url.origin}/config`, {
+          method: "PUT",
+          headers: { "content-type": "application/json", "x-repo": name, "x-host": url.host, "x-mio-role": "admin", "x-mio-token": "console" },
+          body: JSON.stringify(cfg),
+        })
+      );
+      if (!res.ok) return repoSettingsPage(env, csrf, info, esc((await res.text()).slice(0, 200)));
+      const idle = parseInt(res.headers.get("x-commit-time") ?? "", 10) || info.idle;
+      await registry.setConfig(name, { desc: cfg.description, owner: cfg.owner, section: cfg.section, priv: cfg.private }, idle, res.headers.get("x-main-lang") ?? undefined);
+      deps.invalidate(name);
+      return redirect(`${CONSOLE}/?done=settings`);
+    }
+
+    // ---- web editor: GET /~mio/edit/<repo>/<path>?h=<branch>, POST /~mio/edit/<repo> ----
+    const ed = /^\/edit\/([^/]+)(\/.*)?$/.exec(sub);
+    if (ed) {
+      let repo: string;
+      try {
+        repo = decodeURIComponent(ed[1]);
+      } catch {
+        return text("bad repository name", 400);
+      }
+      if (!REPO_NAME.test(repo)) return text("bad repository name", 400);
+      if (!(await registry.get(repo))) return text(`no such repository: ${repo}`, 404);
+      if (req.method === "GET" && ed[2] && ed[2] !== "/") return editor(req, env, repo, `/edit${ed[2]}`, csrf, session, passHash);
+      if (req.method === "POST" && !ed[2]) return editor(req, env, repo, "/edit", csrf, session, passHash);
+      return text("not found", 404);
+    }
+
+    return text("not found", 404);
+  }
+
+  return { handle };
+}

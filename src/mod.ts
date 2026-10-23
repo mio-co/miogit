@@ -17,6 +17,9 @@ import { parseUploadRequest, streamingCloneResponse } from "./git/protocol";
 import { isOid } from "./git/util";
 import { gunzipLimited } from "./git/zlib";
 import type { RepoCell } from "./repo";
+import { envTokens, resolveToken, secretsEqual as secretsEqualImpl } from "./auth";
+import { roleAllows, type Principal } from "./policy";
+import { createConsole, CONSOLE } from "./admin";
 
 export { RepoCell } from "./repo";
 export { Registry } from "./registry";
@@ -24,12 +27,13 @@ export type { Env } from "./env";
 export type { RepoInfo, RepoConfig } from "./registry";
 export type { RefsResult, CommitJson, TreeResult, TreeEntryJson, BlobResult, LogResult, DiffResult, DiffFileJson } from "./repo";
 export type { Person } from "./git/objects";
+export type { Principal, Role } from "./policy";
 
 /** an upload-pack negotiation body is wants/haves/caps only — a few hundred KB */
 const MAX_UPLOAD_PACK_BYTES = 16 * 1024 * 1024;
 
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-/** MioHub mark: a monoline M with a clay full stop; the M follows the colour scheme. */
+/** MioGit mark: a monoline M with a clay full stop; the M follows the colour scheme. */
 const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><style>path{stroke:#1f1e1d}@media (prefers-color-scheme:dark){path{stroke:#f5f4ee}}</style><path d="M8 50V15l18 19 18-19v35" fill="none" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="56.5" cy="50" r="5" fill="#d97757"/></svg>`;
 const RESERVED = new Set(["api", "cgit.css", "app.js", "favicon.ico", "favicon.svg", "robots.txt", "info", "git-upload-pack", "git-receive-pack"]);
 const CACHE_TTL = 60;
@@ -45,6 +49,8 @@ export interface AuthContext<E extends Env = Env> {
   private: boolean;
   /** HTTP Basic credentials on the request, if any */
   credentials: { user: string; pass: string } | null;
+  /** the token those credentials resolved to (env admin token or a per-assistant token), if any */
+  principal: Principal | null;
   /** the live incoming request: headers and URL only — do NOT read its body,
    * which is consumed downstream (a hook that drains it breaks every push) */
   request: Request;
@@ -102,16 +108,15 @@ export interface DurableGitOptions<E extends Env = Env> {
   namespaces?: boolean;
 }
 
-function tokens(env: Env): string[] {
-  const list = [env.GIT_TOKEN ?? "", ...(env.GIT_TOKENS ?? "").split(",")];
-  return list.map((t) => t.trim()).filter(Boolean);
-}
-
 function unauthorized(): Response {
   return new Response("auth required\n", {
     status: 401,
-    headers: { "www-authenticate": 'Basic realm="MioHub"' },
+    headers: { "www-authenticate": 'Basic realm="MioGit"' },
   });
+}
+
+function forbidden(msg: string): Response {
+  return new Response(`${msg}\n`, { status: 403, headers: { "content-type": "text/plain; charset=utf-8" } });
 }
 
 function tooManyRequests(retryAfterMs: number): Response {
@@ -121,24 +126,11 @@ function tooManyRequests(retryAfterMs: number): Response {
   });
 }
 
-async function digest(s: string): Promise<Uint8Array> {
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)));
-}
-
-/** Fixed-length SHA-256 digests, so this leaks nothing about input length. */
-function digestsEqual(a: Uint8Array, b: Uint8Array): boolean {
-  let diff = a.length ^ b.length;
-  for (let i = 0; i < Math.max(a.length, b.length); i++) diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
-  return diff === 0;
-}
-
 /**
  * Timing-safe string comparison for authorize hooks. `credentials.pass ===
  * secret` leaks the match length through timing; compare through this instead.
  */
-export async function secretsEqual(a: string, b: string): Promise<boolean> {
-  return digestsEqual(await digest(a), await digest(b));
-}
+export const secretsEqual = secretsEqualImpl;
 
 function clientIp(req: Request): string {
   return (
@@ -195,89 +187,51 @@ function recordAuthFailure(ip: string): void {
   pruneAuthFailures(now);
 }
 
-/** The default authorize: HTTP Basic where the password is one of the configured tokens. */
-async function tokenAuthorize(ctx: AuthContext): Promise<boolean | Response> {
-  if (ctx.op === "read" && !ctx.private) return true;
-  const valid = tokens(ctx.env);
-  if (!valid.length) {
-    return new Response("access is disabled: set the GIT_TOKEN secret\n", { status: 403 });
-  }
-  const header = ctx.request.headers.get("authorization") ?? "";
-  if (!header.startsWith("Basic ")) return unauthorized();
-
-  const ip = clientIp(ctx.request);
+/**
+ * Resolve the request's HTTP Basic password to a token principal, with per-IP
+ * failure rate limiting. Returns a Response for a rate-limited client.
+ */
+async function principalFor(req: Request, env: Env): Promise<Principal | null | Response> {
+  if (!(req.headers.get("authorization") ?? "").startsWith("Basic ")) return null;
+  const ip = clientIp(req);
   const retryMs = rateLimited(ip);
   if (retryMs !== null) return tooManyRequests(retryMs);
+  const creds = parseBasic(req);
+  const p = creds ? await resolveToken(env, creds.pass) : null;
+  // a Basic header that failed to decode counts as a failed attempt too
+  if (!p) recordAuthFailure(ip);
+  return p;
+}
 
-  // a Basic header that failed to decode is a failed attempt, same as a wrong
-  // password — otherwise malformed headers probe the endpoint rate-limit-free
-  if (!ctx.credentials) {
-    recordAuthFailure(ip);
+/**
+ * The default authorize: three-tier tokens. Reads of public repositories are
+ * open; anything else needs a token whose role allows the op (reader: read,
+ * writer: read + push, admin: everything). Per-ref push rules (main
+ * protection, ownership, no force-push) are enforced inside the repository
+ * cell, where the ref update commands are visible.
+ */
+async function tokenAuthorize(ctx: AuthContext): Promise<boolean | Response> {
+  if (ctx.op === "read" && !ctx.private) return true;
+  if (!ctx.principal) {
+    if (!envTokens(ctx.env).length && !ctx.credentials) {
+      return new Response("auth required (set the GIT_TOKEN secret)\n", { status: 401, headers: { "www-authenticate": 'Basic realm="MioGit"' } });
+    }
     return unauthorized();
   }
-
-  const passDigest = await digest(ctx.credentials.pass);
-  let ok = false;
-  for (const v of valid) ok = digestsEqual(passDigest, await digest(v)) || ok;
-  if (!ok) {
-    recordAuthFailure(ip);
-    return unauthorized();
-  }
-  return true;
+  if (roleAllows(ctx.principal.role, ctx.op, ctx.private)) return true;
+  return forbidden(ctx.op === "write" ? "read-only token: pushing is not allowed" : "this token cannot change configuration");
 }
 
-// ---- browser sessions -------------------------------------------------------
-// A signed cookie (expiry + HMAC keyed off the push token), so rotating
-// GIT_TOKEN signs everyone out. It only grants page reads, never writes, so a
-// cross-site form can't push or change config with it.
-const SESSION_COOKIE = "mh_s";
-const SESSION_DAYS = 30;
-
-async function sessionKey(env: Env): Promise<CryptoKey | null> {
-  const list = tokens(env);
-  if (!list.length) return null;
-  const raw = await digest(`miohub-session:${list[0]}`);
-  return crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-}
-
-function b64url(b: ArrayBuffer): string {
-  return btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-async function makeSession(env: Env): Promise<string | null> {
-  const key = await sessionKey(env);
-  if (!key) return null;
-  const exp = String(Math.floor(Date.now() / 1000) + SESSION_DAYS * 86400);
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(exp));
-  return `${exp}.${b64url(sig)}`;
-}
-
-function readCookie(req: Request, name: string): string | null {
-  for (const part of (req.headers.get("cookie") ?? "").split(";")) {
-    const i = part.indexOf("=");
-    if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
-  }
-  return null;
-}
-
-async function sessionValid(req: Request, env: Env): Promise<boolean> {
-  const v = readCookie(req, SESSION_COOKIE);
-  if (!v) return false;
-  const [exp, sig] = v.split(".");
-  if (!exp || !sig || !/^\d+$/.test(exp) || parseInt(exp, 10) < Date.now() / 1000) return false;
-  const key = await sessionKey(env);
-  if (!key) return false;
-  const expect = b64url(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(exp)));
-  return secretsEqual(expect, sig);
-}
-
-/** remember: a 30-day cookie; otherwise a browser-session cookie that ends when the browser closes. */
-function sessionCookie(v: string, remember = true): string {
-  const age = remember ? `; Max-Age=${SESSION_DAYS * 86400}` : "";
-  return `${SESSION_COOKIE}=${v}; Path=/${age}; HttpOnly; Secure; SameSite=Lax`;
-}
-function clearSessionCookie(): string {
-  return `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
+/** A smart-HTTP refusal git prints as "remote error: <msg>" instead of a bare HTTP status. */
+function gitError(service: string, msg: string): Response {
+  const line = (s: string) => {
+    const b = new TextEncoder().encode(s);
+    return (b.length + 4).toString(16).padStart(4, "0") + s;
+  };
+  return new Response(`${line(`# service=${service}\n`)}0000${line(`ERR ${msg}\n`)}0000`, {
+    status: 200,
+    headers: { "content-type": `application/x-${service}-advertisement`, "cache-control": "no-cache" },
+  });
 }
 
 function redirect(to: string, cookie?: string): Response {
@@ -286,96 +240,38 @@ function redirect(to: string, cookie?: string): Response {
   return new Response(null, { status: 303, headers: h });
 }
 
-function safeNext(n: string | null): string {
-  return n && n.startsWith("/") && !n.startsWith("//") && !n.startsWith("/\\") ? n : "/";
-}
-
-async function loginPage(env: Env, next: string, error = "", remember = true): Promise<Response> {
-  const LOCK = `<svg viewBox='0 0 256 256' aria-hidden='true'><rect x='40' y='88' width='176' height='128' rx='8' fill='none' stroke='currentColor' stroke-width='16'/><path d='M88 88V56a40 40 0 0 1 80 0v32' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
-  const cancel = next === "/" || next.startsWith("/login") ? "/" : next;
-  const dialog = `
-<div class='mio-dialog-layer' data-dialog-layer>
-<div class='mio-backdrop'></div>
-<form class='mio-dialog' role='dialog' aria-modal='true' aria-labelledby='login-t' aria-describedby='login-d' method='post' action='/login' data-cancel='${esc(cancel)}'>
-  <div class='mio-dialog-icon'>${LOCK}</div>
-  <h2 id='login-t'>${t("Sign in to MioHub", "登录 MioHub")}</h2>
-  <p id='login-d'>${t("Use your push password. Once signed in, private repositories show up too.", "使用推送密码登录，登录后可以查看私有仓库。")}</p>
-  ${error ? `<div class='mio-dialog-err' role='alert'>${error}</div>` : ""}
-  <input type='hidden' name='next' value='${esc(next)}'/>
-  <input type='text' name='username' value='mio' autocomplete='username' hidden readonly tabindex='-1' aria-hidden='true'/>
-  <label class='mio-field'><span>${t("Password", "密码")}</span><input type='password' name='password' autocomplete='current-password' required autofocus${error ? " aria-invalid='true'" : ""}/></label>
-  <label class='mio-check'><input type='checkbox' name='remember' value='1'${remember ? " checked" : ""}/><span>${t("Remember password", "记住密码")}</span></label>
-  <div class='mio-dialog-actions'>
-    <a class='mio-btn mio-btn-secondary mio-btn-md' href='${esc(cancel)}' data-dialog-cancel>${t("Cancel", "取消")}</a>
-    <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Sign in", "登录")}</button>
-  </div>
-</form>
-</div>`;
-  const behind = `<div class='mio-behind' inert aria-hidden='true'>${await indexBody(env, false).catch(() => "")}</div>`;
-  const res = htmlResponse(layout({ ...siteBase(env), tab: "login-bg", body: behind, overlay: dialog }), error ? 401 : 200);
-  res.headers.set("cache-control", "no-store");
-  return res;
-}
-
-async function loginRoute(req: Request, env: Env, url: URL, signedIn: boolean): Promise<Response> {
-  if (req.method === "GET") {
-    const next = safeNext(url.searchParams.get("next"));
-    return signedIn ? redirect(next) : await loginPage(env, next);
-  }
-  if (req.method !== "POST") return new Response("method not allowed\n", { status: 405 });
-  const ip = clientIp(req);
-  const retry = rateLimited(ip);
-  const form = await req.formData().catch(() => null);
-  const next = safeNext((form?.get("next") as string | null) ?? null);
-  if (retry !== null) return loginPage(env, next, t("Too many attempts. Try again in a minute.", "尝试次数过多，请一分钟后再试。"), form?.get("remember") === "1");
-  const pass = String(form?.get("password") ?? "");
-  const remember = form?.get("remember") === "1";
-  const valid = tokens(env);
-  let ok = false;
-  const pd = await digest(pass);
-  for (const v of valid) ok = digestsEqual(pd, await digest(v)) || ok;
-  if (!ok || !pass) {
-    recordAuthFailure(ip);
-    return loginPage(env, next, t("Wrong password.", "密码不正确。"), remember);
-  }
-  const v = await makeSession(env);
-  return v ? redirect(next, sessionCookie(v, remember)) : loginPage(env, next, "GIT_TOKEN is not set");
-}
-
-/** Fill the top bar's account slot per request, so cached pages stay shared. Signed-in HTML is never stored by the browser. */
-function decorate(res: Response, signedIn: boolean, url: URL): Response {
+/**
+ * Fill the top bar's account slot per request, so cached pages stay shared:
+ * outside the console it is a link into /~mio/ (the console cookie is scoped
+ * to /~mio/ and never reaches these pages). The blob page's edit slot links
+ * to the console editor.
+ */
+function decorate(res: Response, url: URL): Response {
   if (!(res.headers.get("content-type") ?? "").startsWith("text/html")) return res;
-  const next = encodeURIComponent(url.pathname + url.search);
-  const html = signedIn
-    ? `<form method='post' action='/logout' class='mio-auth'><button type='submit' class='mio-btn mio-btn-ghost'>${t("Sign out", "退出")}</button></form>`
-    : url.pathname === "/login" ? "" : `<a class='mio-btn mio-btn-ghost mio-auth' href='/login?next=${next}'>${t("Sign in", "登录")}</a>`;
-  let out: Response;
-  if (typeof HTMLRewriter !== "undefined") {
-    out = new HTMLRewriter()
-      .on("#mh-auth", { element(e) { e.replace(html, { html: true }); } })
-      .on("#mh-edit", {
-        element(e) {
-          const href = e.getAttribute("data-href");
-          if (signedIn && href) e.replace(`<a class='mio-btn mio-btn-secondary blob-edit' href='${href.replace(/'/g, "%27")}'>${t("Edit", "编辑")}</a>`, { html: true });
-          else e.remove();
-        },
-      })
-      .transform(res);
-  } else {
-    out = new Response(res.body, res);
+  if (url.pathname === CONSOLE || url.pathname.startsWith(`${CONSOLE}/`)) {
+    if (typeof HTMLRewriter === "undefined") return res;
+    return new HTMLRewriter().on("#mh-auth", { element(e) { e.remove(); } }).transform(res);
   }
-  if (signedIn) {
-    out = new Response(out.body, out);
-    out.headers.set("cache-control", "private, no-store");
-  }
-  return out;
+  const html = `<a class='mio-btn mio-btn-ghost mio-auth' href='${CONSOLE}/' rel='nofollow'>${t("Console", "管理")}</a>`;
+  if (typeof HTMLRewriter === "undefined") return new Response(res.body, res);
+  return new HTMLRewriter()
+    .on("#mh-auth", { element(e) { e.replace(html, { html: true }); } })
+    .on("#mh-edit", {
+      element(e) {
+        const href = e.getAttribute("data-href");
+        // data-href is "/<repo>/edit/<path>?h=..": the editor lives in the console
+        if (href && href.startsWith("/")) e.replace(`<a class='mio-btn mio-btn-secondary blob-edit' rel='nofollow' href='${CONSOLE}/edit${href.replace(/^\/([^/]+)\/edit/, "/$1").replace(/'/g, "%27")}'>${t("Edit", "编辑")}</a>`, { html: true });
+        else e.remove();
+      },
+    })
+    .transform(res);
 }
 
 function siteBase(env: Env) {
   return {
-    site: env.SITE_NAME ?? "MioHub",
+    site: env.SITE_NAME ?? "MioGit",
     siteDesc: env.SITE_DESC ?? "",
-    title: env.SITE_NAME ?? "MioHub",
+    title: env.SITE_NAME ?? "MioGit",
     sub: env.SITE_DESC ?? "",
     tab: "index",
   };
@@ -480,7 +376,7 @@ async function indexPage(env: Env, signedIn = false): Promise<Response> {
   return htmlResponse(layout({ ...siteBase(env), body: await indexBody(env, signedIn) }));
 }
 
-async function indexBody(env: Env, signedIn = false): Promise<string> {
+async function indexBody(env: Env, signedIn = false, settings = false): Promise<string> {
   const registry = env.REGISTRY.getByName("registry");
   const repos = await registry.list(1000, undefined, signedIn);
   let rows = "";
@@ -495,7 +391,9 @@ async function indexBody(env: Env, signedIn = false): Promise<string> {
       (r.lang ? `<span class='rl-lang' data-noi18n><i style='background:${langColor(r.lang)}'></i>${esc(r.lang)}</span>` : "") +
       `<span class='rl-owner'>${esc(r.owner || env.SITE_OWNER || "")}</span>` +
       (signedIn && r.db_bytes + r.r2_bytes > 0 ? `<span class='rl-size' data-noi18n>${fmtBytes(r.db_bytes + r.r2_bytes)}</span>` : "") +
-      `<time datetime='${iso}' title='${iso.slice(0, 16).replace("T", " ")} UTC'>${age(secs)}</time></div></li>`;
+      `<time datetime='${iso}' title='${iso.slice(0, 16).replace("T", " ")} UTC'>${age(secs)}</time>` +
+      (settings ? `<a class='rl-set' href='${CONSOLE}/repos/${repoUrl(r.name)}'>${t("Settings", "设置")}</a>` : "") +
+      `</div></li>`;
   }
   const sortBar = repos.length > 1
     ? `<div class='mio-seg rl-sort' role='group' aria-label='sort'>` +
@@ -688,15 +586,30 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
   const repoRoute = new URLPattern({
     pathname: namespaced ? "/:owner/:name{.git}?{/*}?" : "/:name{.git}?{/*}?",
   });
-  const inner = async (req: Request, env: E, ctx: ExecutionContext, signedIn: boolean): Promise<Response> => {
+  const console_ = createConsole({ siteBase, indexBody, invalidate: (repo) => infoMemo.delete(repo) });
+  const inner = async (req: Request, env: E, ctx: ExecutionContext): Promise<Response> => {
       const url = new URL(req.url);
       const path = url.pathname;
 
-      if (ui && path === "/login") return loginRoute(req, env, url, signedIn);
-      if (ui && path === "/logout") {
-        if (req.method !== "POST") return new Response("method not allowed\n", { status: 405 });
-        return redirect("/", clearSessionCookie());
+      // the console: everything management-related lives under /~mio/ (one
+      // Cloudflare Access app, JWT re-verified inside). "~" never starts a
+      // repository name, so this cannot shadow a repository.
+      if (/^\/%7e/i.test(path)) {
+        // one spelling only, so an Access path rule cannot be sidestepped
+        const u = new URL(url.toString());
+        u.pathname = "/~" + path.slice(4);
+        return new Response(null, { status: 301, headers: { location: u.toString() } });
       }
+      if (ui && (path === CONSOLE || path.startsWith(`${CONSOLE}/`))) return console_.handle(req, env);
+      if (!ui && path.startsWith("/~")) return new Response("not found\n", { status: 404 });
+      // legacy entry points: no unprotected sign-in outside /~mio/
+      if (ui && (path === "/login" || path === "/logout")) {
+        return new Response(null, { status: 302, headers: { location: `${CONSOLE}/login`, "cache-control": "no-store" } });
+      }
+
+      // the request's token, resolved at most once
+      let principalMemo: Principal | null | Response | undefined;
+      const principal = async () => (principalMemo === undefined ? (principalMemo = await principalFor(req, env)) : principalMemo);
 
       // site-level JSON ("api" is a reserved repository name)
       if (path.startsWith("/api/")) {
@@ -705,10 +618,12 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
           withCors(Response.json(data, { status, headers: { "x-content-type-options": "nosniff" } }), options.cors);
         if (path === "/api/repos" && req.method === "GET") {
           const ns = url.searchParams.get("owner") ?? undefined;
-          // private repos are listed for a signed-in browser or a valid push password
-          let full = signedIn;
-          if (!full && req.headers.has("authorization")) {
-            const d = await authorize({ repo: "", op: "write", private: true, credentials: parseBasic(req), request: req, env });
+          // private repos are listed for any valid token (reader and up)
+          let full = false;
+          if (req.headers.has("authorization")) {
+            const p = await principal();
+            if (p instanceof Response) return withCors(p, options.cors);
+            const d = await authorize({ repo: "", op: "read", private: true, credentials: parseBasic(req), principal: p, request: req, env });
             if (d instanceof Response) return withCors(d, options.cors);
             full = d === true;
           }
@@ -727,11 +642,16 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
       }
 
       if (path === "/" || path === "") {
-        if (signedIn) return indexPage(env, true);
         if (ui && req.headers.has("authorization")) {
-          const d = await authorize({ repo: "", op: "write", private: true, credentials: parseBasic(req), request: req, env });
+          const p = await principal();
+          if (p instanceof Response) return p;
+          const d = await authorize({ repo: "", op: "read", private: true, credentials: parseBasic(req), principal: p, request: req, env });
           if (d instanceof Response) return d;
-          if (d === true) return indexPage(env, true);
+          if (d === true) {
+            const res = await indexPage(env, true);
+            res.headers.set("cache-control", "private, no-store");
+            return res;
+          }
         }
         // the index is the front door under load: cache it briefly at the edge
         const cache = pageCache();
@@ -771,23 +691,14 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
       }
       const { repo, sub } = parsed;
       const { op, isReceive, isProtocol, isApi, isAdmin } = classify(sub, req.method, url);
-      // web editor: signed-in browsers only, same-origin posts only
-      const isEdit = ui && (sub === "/edit" || sub.startsWith("/edit/"));
-      if (isEdit) {
-        if (req.method !== "GET" && req.method !== "POST") return new Response("method not allowed\n", { status: 405 });
-        if (req.method === "GET" && sub === "/edit") return new Response("not found\n", { status: 404 });
-        if (!signedIn) {
-          return req.method === "GET"
-            ? redirect(`/login?next=${encodeURIComponent(path + url.search)}`)
-            : new Response("sign in required\n", { status: 401 });
-        }
-        if (req.method === "POST") {
-          const origin = req.headers.get("origin");
-          const site = req.headers.get("sec-fetch-site");
-          if ((origin && new URL(origin).host !== url.host) || (!origin && site && site !== "same-origin")) {
-            return new Response("cross-site edit refused\n", { status: 403 });
-          }
-        }
+      // the web editor moved into the console (/~mio/edit/<repo>/<path>)
+      if (ui && (sub === "/edit" || sub.startsWith("/edit/"))) {
+        if (req.method === "GET" && sub.startsWith("/edit/")) return redirect(`${CONSOLE}/edit/${repoUrl(repo)}${sub.slice(5)}${url.search}`);
+        return new Response("the web editor lives under /~mio/edit/\n", { status: 404 });
+      }
+      // configuration / gc / delete are console-only now (/~mio/repos/<name>)
+      if (isAdmin) {
+        return new Response("repository management moved to the console: /~mio/repos/<name>\n", { status: 404 });
       }
 
       const registry = env.REGISTRY.getByName("registry");
@@ -806,24 +717,34 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
 
       // every repo-scoped request passes through authorize; the default hook
       // waves reads of public repositories straight through
+      const who = await principal();
+      if (who instanceof Response) return who;
       const decision = await authorize({
         repo,
         op,
         private: !!info?.priv,
         credentials: parseBasic(req),
+        principal: who,
         request: req,
         env,
       });
-      const pageRead = op === "read" && !isProtocol && !isApi;
-      if (decision !== true && (pageRead || isEdit) && signedIn) {
-        // a signed-in browser may read any repository page
-      } else if (decision instanceof Response) {
-        if (pageRead && decision.status === 401 && !req.headers.has("authorization")) return redirect(`/login?next=${encodeURIComponent(path + url.search)}`);
+      if (decision instanceof Response) {
+        // a refused push gets a message git prints, not a bare status
+        if (isReceive && sub === "/info/refs" && decision.status === 403) return gitError("git-receive-pack", "read-only token: pushing is not allowed");
         return decision;
-      } else if (!decision) return unauthorized();
+      }
+      if (!decision) return unauthorized();
+      // what the cell enforces per ref: the token's role (a custom hook that
+      // admitted the request without a token principal counts as admin)
+      const role = who?.role ?? "admin";
+      if (isReceive && !info && role !== "admin") {
+        // pushing to a new name creates a repository: admin only
+        if (sub === "/info/refs") return gitError("git-receive-pack", "writer token cannot create repositories");
+        return forbidden("writer token cannot create repositories");
+      }
 
-      // only pushes and admin ops may touch repos that don't exist yet
-      if (!info && !isReceive && !isAdmin) {
+      // only pushes may touch repos that don't exist yet
+      if (!info && !isReceive) {
         if (isApi) return Response.json({ error: `repository not found: ${repo}` }, { status: 404 });
         if (isProtocol) return new Response(`repository not found: ${repo}\n`, { status: 404 });
         return errorPage(siteBase(env), `no such repository: ${repo}`, 404);
@@ -835,7 +756,6 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
         cache !== null &&
         req.method === "GET" &&
         !isProtocol &&
-        !isEdit &&
         info !== null &&
         !info.priv &&
         !req.headers.has("authorization");
@@ -898,6 +818,9 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
       fwd.headers.set("x-repo", repo);
       fwd.headers.set("x-host", url.host);
       fwd.headers.set("x-proto", url.protocol.replace(":", ""));
+      // always overwritten: the cell trusts these for per-ref push policy
+      fwd.headers.set("x-mio-role", role);
+      fwd.headers.set("x-mio-token", who?.id ?? "hook");
       let res = await stub.fetch(fwd);
       // set before the cache put, so cached copies carry the header too
       if (options.cors && isApi) {
@@ -926,51 +849,7 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
           );
         }
       }
-      if (isEdit && req.method === "POST" && res.headers.has("x-location")) {
-        if (res.headers.get("x-changed") === "1") {
-          const idle = parseInt(res.headers.get("x-commit-time") ?? "", 10) || Date.now();
-          try {
-            await registry.upsert(repo, idle, res.headers.get("x-main-lang") ?? undefined);
-            const sb = parseStoreBytes(res);
-            if (sb) await registry.setBytes(repo, sb);
-          } catch {
-            // registry deferred
-          }
-          infoMemo.delete(repo);
-        }
-        return new Response(null, { status: 303, headers: { location: res.headers.get("x-location")!, "cache-control": "no-store" } });
-      }
-      if (res.ok && (sub === "/config" || sub === "/description") && req.method === "PUT") {
-        try {
-          const cfg = (await res.clone().json()) as {
-            description: string;
-            owner: string;
-            section: string;
-            private: boolean;
-          };
-          const idle = parseInt(res.headers.get("x-commit-time") ?? "", 10) || Date.now();
-          if (!info) await registry.upsert(repo, idle);
-          await registry.setConfig(
-            repo,
-            {
-              desc: cfg.description,
-              owner: cfg.owner,
-              section: cfg.section,
-              priv: cfg.private,
-            },
-            idle,
-            res.headers.get("x-main-lang") ?? undefined
-          );
-          const sb = parseStoreBytes(res);
-          if (sb) await registry.setBytes(repo, sb);
-        } catch {
-          // non-JSON response; skip registry sync
-        }
-      }
-      if (res.ok && (sub === "/" || sub === "") && req.method === "DELETE") {
-        await registry.remove(repo);
-      }
-      if (isReceive || isAdmin) infoMemo.delete(repo); // this isolate sees its own mutations
+      if (isReceive) infoMemo.delete(repo); // this isolate sees its own mutations
 
       if (cacheable && cacheKey && res.ok && !res.headers.has("set-cookie")) {
         const toCache = new Response(res.clone().body, res);
@@ -993,9 +872,8 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
         u.hostname = env.CANONICAL_HOST;
         return new Response(null, { status: 301, headers: { location: u.toString() } });
       }
-      const signedIn = ui ? await sessionValid(req, env) : false;
-      const res = await inner(req, env, ctx, signedIn);
-      return decorate(res, signedIn, new URL(req.url));
+      const res = await inner(req, env, ctx);
+      return ui ? decorate(res, new URL(req.url)) : res;
     },
   };
 }

@@ -1,5 +1,8 @@
 #!/bin/bash
 # cdgit end-to-end suite. Usage: e2e.sh <base-url> <token>
+# NOTE (MioGit): upstream dgit suite. Repository config / gc / DELETE moved to
+# the /~mio/ console, so the sections that call them over HTTP no longer apply;
+# the permission model is covered by tests/e2e-perms.mjs (npm run test:e2e).
 BASE=${1:-http://127.0.0.1:8787}
 TOKEN=${2:-devtoken}
 HOSTPORT=${BASE#http://}; HOSTPORT=${HOSTPORT#https://}

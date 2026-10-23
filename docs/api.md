@@ -1,8 +1,12 @@
 # durable-git API
 
 The library (`createDurableGit`), the JSON API every repository serves,
-and the RPC surface on the repository cell. Operational endpoints
-(config, gc, delete) are in the [README](../README.md#operate).
+and the RPC surface on the repository cell. In MioGit the operational
+endpoints (config, gc, delete) are no longer served on repository paths:
+repository settings live in the `/~mio/` console (see the README). The
+default `authorize` is the three-tier token policy (`src/policy.ts`);
+per-ref push rules are enforced inside the repository cell from the
+`x-mio-role` / `x-mio-token` headers the Worker always overwrites.
 
 ```sh
 npm install durable-git
@@ -43,6 +47,7 @@ is not repository-scoped; it lists public repositories regardless.
 | `op` | `"read"` pages, clones, the JSON API · `"write"` push · `"admin"` config, gc, delete |
 | `private` | the registry's private flag; `false` for a repository that does not exist yet |
 | `credentials` | `{ user, pass }` from HTTP Basic, or `null` |
+| `principal` | the token those credentials resolved to — `{ role: "admin" \| "writer" \| "reader", id, name }` — or `null` |
 | `request` | headers and URL only — the body is consumed downstream; a hook that reads it breaks every push |
 | `env` | your bindings |
 

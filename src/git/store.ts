@@ -79,6 +79,10 @@ export class GitStore {
       CREATE TABLE IF NOT EXISTS push_edges (
         child TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS ref_owner (
+        ref TEXT PRIMARY KEY,
+        token_id TEXT NOT NULL
+      );
     `);
     const flag = this.getMeta("has-loose");
     if (flag === null) {
@@ -231,7 +235,7 @@ export class GitStore {
   }
 
   wipe(): void {
-    for (const t of ["objects", "chunks", "refs", "meta", "reachable", "peeled", "stats_cache"]) {
+    for (const t of ["objects", "chunks", "refs", "meta", "reachable", "peeled", "stats_cache", "ref_owner"]) {
       this.sql.exec(`DROP TABLE IF EXISTS ${t}`);
     }
     this.packs.wipe();
@@ -266,6 +270,24 @@ export class GitStore {
 
   delRef(name: string): void {
     this.sql.exec("DELETE FROM refs WHERE name = ?", name);
+  }
+
+  /** Token id of the writer that created `ref` (null: created by an admin or before tracking). */
+  refOwner(ref: string): string | null {
+    const rows = this.sql.exec<{ token_id: string }>("SELECT token_id FROM ref_owner WHERE ref = ?", ref).toArray();
+    return rows[0]?.token_id ?? null;
+  }
+
+  setRefOwner(ref: string, tokenId: string): void {
+    this.sql.exec(
+      "INSERT INTO ref_owner (ref, token_id) VALUES (?, ?) ON CONFLICT(ref) DO UPDATE SET token_id = excluded.token_id",
+      ref,
+      tokenId
+    );
+  }
+
+  delRefOwner(ref: string): void {
+    this.sql.exec("DELETE FROM ref_owner WHERE ref = ?", ref);
   }
 
   /** HEAD symref target, e.g. "refs/heads/main". */

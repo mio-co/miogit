@@ -131,7 +131,7 @@ export function layout(o: LayoutOpts): string {
 <head>
 <meta charset='utf-8'/>
 <title>${esc(o.title)}</title>
-<meta name='generator' content='MioHub'/>
+<meta name='generator' content='MioGit'/>
 <meta name='viewport' content='width=device-width, initial-scale=1'/>
 <meta name='color-scheme' content='light dark'/>
 <script src='/app.js?v=${UI_VER}'></script>
