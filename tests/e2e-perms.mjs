@@ -187,7 +187,13 @@ try {
   check(/mg_signed=1; Path=\/;[^,]*SameSite=Lax/.test(sc), "login also sets the secret-free hint cookie mg_signed=1 (Path=/, SameSite=Lax)");
   check((await consoleGet("/~mio/login?next=%2F%2Fevil.example")).headers.get("location") === "/~mio/", "next=//evil -> console home");
   check((await consoleGet("/~mio/login?next=%2F~mio%2Ftokens")).headers.get("location") === "/~mio/tokens", "next=/~mio/tokens is honoured");
-  check(/Path=\/~mio\//.test(sc) && /HttpOnly/.test(sc) && /Secure/.test(sc) && /SameSite=Strict/.test(sc) && /Max-Age=\d+/.test(sc), "cookie: Path=/~mio/, HttpOnly, Secure, SameSite=Strict, Max-Age");
+  const scA = /mg_admin=[^,]*/.exec(sc)?.[0] ?? "";
+  check(/Path=\/~mio\//.test(scA) && /HttpOnly/.test(scA) && /Secure/.test(scA) && /SameSite=Lax/.test(scA) && !/Max-Age/.test(scA), "cookie without remember-me: Path=/~mio/, HttpOnly, Secure, SameSite=Lax, browser-session (no Max-Age)");
+  const liR = await consolePost("/~mio/login", { username: "mio", password: CONSOLE_PASS, next: "/", remember: "1" });
+  const ageR = parseInt(/mg_admin=[^,]*Max-Age=(\d+)/.exec(liR.headers.get("set-cookie") ?? "")?.[1] ?? "0", 10);
+  check(liR.status === 303 && ageR > 29 * 86400 && ageR <= 30 * 86400, "remember me: session cookie persists for 30 days");
+  const lpHtml = await (await fetch(`${BASE}/~mio/login`, { redirect: "manual", headers: H() })).text();
+  check(/name='remember' value='1' checked/.test(lpHtml) && /mio-btn-lg lg-submit/.test(lpHtml) && !/>(Cancel|取消)</.test(lpHtml) && /<div class='mio-backdrop'/.test(lpHtml) && !/<a class='mio-backdrop'/.test(lpHtml), "login dialog: remember-me (on by default), full-width Sign in, no Cancel button, backdrop tap does not close");
   const home = await consoleGet("/~mio/");
   const homeHtml = await home.text();
   check(home.status === 200 && homeHtml.includes("permtest"), "console home lists repos");

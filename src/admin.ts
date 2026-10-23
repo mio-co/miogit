@@ -28,6 +28,9 @@ import {
   sameOrigin,
   secretsEqual,
   sessionCookie,
+  REMEMBER_TTL_S,
+  SESSION_TTL_S,
+  sessionSecondsLeft,
   sha256Hex,
   validSession,
   verifyAccess,
@@ -133,6 +136,8 @@ interface DialogOpts {
   /** render the dialog itself as this form (action) */
   formAction?: string;
   danger?: boolean;
+  /** false: a tap on the backdrop does nothing (only the × closes), for forms you would hate to lose */
+  backdropCloses?: boolean;
 }
 
 /**
@@ -146,7 +151,7 @@ function dialog(o: DialogOpts): string {
   const formAttrs = o.formAction ? ` method='post' action='${esc(o.formAction)}'` : "";
   return `
 <div class='mio-dialog-layer' data-dialog-layer>
-<a class='mio-backdrop' href='${esc(o.cancel)}' tabindex='-1' aria-hidden='true'></a>
+${o.backdropCloses === false ? `<div class='mio-backdrop' aria-hidden='true'></div>` : `<a class='mio-backdrop' href='${esc(o.cancel)}' tabindex='-1' aria-hidden='true'></a>`}
 <${tag} class='mio-dialog mio-dialog-${o.size ?? "md"}' role='dialog' aria-modal='true' aria-labelledby='dlg-t'${o.desc ? " aria-describedby='dlg-d'" : ""}${formAttrs} data-cancel='${esc(o.cancel)}'>
   <div class='mio-dialog-h'>
     ${o.icon ? `<div class='mio-dialog-icon${o.danger ? " is-danger" : ""}'>${o.icon}</div>` : ""}
@@ -206,15 +211,16 @@ export function createConsole(deps: ConsoleDeps) {
     );
   }
 
-  async function loginPage(env: Env, next: string, error = "", user = ""): Promise<Response> {
+  async function loginPage(env: Env, next: string, error = "", user = "", remember = true): Promise<Response> {
     const body = `
   ${error ? `<div class='mio-dialog-err' role='alert'>${error}</div>` : ""}
   <input type='hidden' name='next' value='${esc(next)}'/>
   <label class='mio-field'><span>${t("Username", "用户名")}</span><input type='text' name='username' value='${esc(user)}' autocomplete='username' autocapitalize='off' spellcheck='false' required${user ? "" : " autofocus"}/></label>
   <label class='mio-field'><span>${t("Password", "密码")}</span><input type='password' name='password' autocomplete='current-password' required${user ? " autofocus" : ""}${error ? " aria-invalid='true'" : ""}/></label>
+  <label class='mio-check lg-remember'><input type='checkbox' name='remember' value='1'${remember ? " checked" : ""}/><span>${t("Keep me signed in for 30 days", "记住我（30 天内免登录）")}</span></label>
+  <button type='submit' class='mio-btn mio-btn-primary mio-btn-lg lg-submit'>${t("Sign in", "登录")}</button>
 `;
-    const footer = `<a class='mio-btn mio-btn-secondary mio-btn-md' href='/'>${t("Cancel", "取消")}</a>
-    <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Sign in", "登录")}</button>`;
+    const footer = "";
     return page(
       env,
       dialog({
@@ -225,6 +231,7 @@ export function createConsole(deps: ConsoleDeps) {
         footer,
         size: "sm",
         cancel: "/",
+        backdropCloses: false,
         formAction: `${CONSOLE}/login`,
       }),
       error ? 401 : 200,
@@ -579,18 +586,19 @@ export function createConsole(deps: ConsoleDeps) {
       const next = safeNext((form?.get("next") as string | null) ?? null);
       const user = String(form?.get("username") ?? "");
       const pass = String(form?.get("password") ?? "");
-      if (!passHash) return loginPage(env, next, t("The console password is not configured (ADMIN_PASSWORD_HASH).", "管理台密码未配置（ADMIN_PASSWORD_HASH）。"), user);
+      const remember = form?.get("remember") === "1";
+      if (!passHash) return loginPage(env, next, t("The console password is not configured (ADMIN_PASSWORD_HASH).", "管理台密码未配置（ADMIN_PASSWORD_HASH）。"), user, remember);
       const wait = await registry.loginBlocked(ip);
-      if (wait > 0) return loginPage(env, next, t(`Too many failed attempts. Try again in ${Math.ceil(wait / 60000)} min.`, `失败次数过多，请 ${Math.ceil(wait / 60000)} 分钟后再试。`), user);
+      if (wait > 0) return loginPage(env, next, t(`Too many failed attempts. Try again in ${Math.ceil(wait / 60000)} min.`, `失败次数过多，请 ${Math.ceil(wait / 60000)} 分钟后再试。`), user, remember);
       // always run both checks (no early exit on a wrong username)
       const userOk = await secretsEqual(user, adminUser(env));
       const passOk = await verifyPassword(pass, passHash);
       if (!userOk || !passOk) {
         await registry.loginFailed(ip);
-        return loginPage(env, next, t("Wrong username or password.", "用户名或密码不正确。"), user);
+        return loginPage(env, next, t("Wrong username or password.", "用户名或密码不正确。"), user, remember);
       }
       await registry.loginSucceeded(ip);
-      return redirect(next, sessionCookie(await makeSession(env, passHash)), hintCookie());
+      return redirect(next, sessionCookie(await makeSession(env, passHash, remember ? REMEMBER_TTL_S : SESSION_TTL_S), remember), hintCookie());
     }
 
     if (!session || !passHash) {
@@ -666,7 +674,9 @@ export function createConsole(deps: ConsoleDeps) {
       const h = await hashPassword(next);
       await registry.setSetting("admin_password_hash", h);
       // the session key is bound to the hash: everyone else is signed out, this browser gets a fresh cookie
-      return redirect(`${CONSOLE}/?done=password`, sessionCookie(await makeSession(env, h)), hintCookie());
+      // keep "remember me" if this browser had it (a session longer than the 12 h default)
+      const kept = sessionSecondsLeft(session) > SESSION_TTL_S;
+      return redirect(`${CONSOLE}/?done=password`, sessionCookie(await makeSession(env, h, kept ? REMEMBER_TTL_S : SESSION_TTL_S), kept), hintCookie());
     }
 
     // ---- browse any repository (public or private) inside the console: /~mio/r/<repo>/<page> ----

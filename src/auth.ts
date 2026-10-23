@@ -133,6 +133,8 @@ export async function adminPasswordHash(env: Env): Promise<string | null> {
 export const SESSION_COOKIE = "mg_admin";
 export const SESSION_PATH = "/~mio/";
 export const SESSION_TTL_S = 12 * 3600;
+/** "Remember me": the session survives closing the browser for 30 days. */
+export const REMEMBER_TTL_S = 30 * 24 * 3600;
 
 /** HMAC key bound to the current password hash: changing the password signs every session out. */
 async function sessionKey(env: Env, passHash: string): Promise<CryptoKey> {
@@ -144,8 +146,8 @@ async function hmac(key: CryptoKey, msg: string): Promise<string> {
   return b64url(await crypto.subtle.sign("HMAC", key, te.encode(msg)));
 }
 
-export async function makeSession(env: Env, passHash: string, now = Date.now()): Promise<string> {
-  const exp = String(Math.floor(now / 1000) + SESSION_TTL_S);
+export async function makeSession(env: Env, passHash: string, ttl = SESSION_TTL_S, now = Date.now()): Promise<string> {
+  const exp = String(Math.floor(now / 1000) + ttl);
   const nonce = b64url(crypto.getRandomValues(new Uint8Array(12)));
   const body = `${adminUser(env)}.${exp}.${nonce}`;
   return `${body}.${await hmac(await sessionKey(env, passHash), body)}`;
@@ -172,12 +174,23 @@ export async function validSession(req: Request, env: Env, passHash: string | nu
   return (await secretsEqual(expect, sig)) ? v : null;
 }
 
-export function sessionCookie(v: string): string {
-  return `${SESSION_COOKIE}=${v}; Path=${SESSION_PATH}; Max-Age=${SESSION_TTL_S}; HttpOnly; Secure; SameSite=Strict`;
+/** Seconds left on a valid session value (its signed expiry). */
+export function sessionSecondsLeft(v: string, now = Date.now()): number {
+  return Math.max(0, parseInt(v.split(".")[1] ?? "0", 10) - Math.floor(now / 1000));
+}
+
+/**
+ * remember = true: persistent cookie that lives as long as the signed expiry (30 days).
+ * remember = false: browser-session cookie (gone when the browser closes), signed expiry 12 h.
+ * SameSite=Lax so links from other sites/apps into /~mio/ keep the session; every POST is CSRF-checked.
+ */
+export function sessionCookie(v: string, remember = false): string {
+  const age = remember ? `; Max-Age=${sessionSecondsLeft(v)}` : "";
+  return `${SESSION_COOKIE}=${v}; Path=${SESSION_PATH}${age}; HttpOnly; Secure; SameSite=Lax`;
 }
 
 export function clearSessionCookie(): string {
-  return `${SESSION_COOKIE}=; Path=${SESSION_PATH}; Max-Age=0; HttpOnly; Secure; SameSite=Strict`;
+  return `${SESSION_COOKIE}=; Path=${SESSION_PATH}; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
 }
 
 /**
@@ -187,7 +200,7 @@ export function clearSessionCookie(): string {
  */
 export const HINT_COOKIE = "mg_signed";
 export function hintCookie(): string {
-  return `${HINT_COOKIE}=1; Path=/; Max-Age=${SESSION_TTL_S}; HttpOnly; Secure; SameSite=Lax`;
+  return `${HINT_COOKIE}=1; Path=/; Max-Age=${REMEMBER_TTL_S}; HttpOnly; Secure; SameSite=Lax`;
 }
 export function clearHintCookie(): string {
   return `${HINT_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;

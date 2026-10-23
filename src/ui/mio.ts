@@ -94,6 +94,9 @@ svg{flex:none}
 .mio-btn-xs svg{width:14px;height:14px}
 .mio-btn-md{height:var(--cds-h-control);padding:0 14px;font-size:13.5px;font-weight:500}
 .mio-btn-md svg{width:16px;height:16px}
+.mio-btn-lg{height:var(--cds-h-control-lg);padding:0 16px;font-size:14px;font-weight:500}
+.lg-remember{margin-top:-2px}
+.lg-submit{width:100%;margin-top:4px}
 .mio-btn-icon{padding:0;aspect-ratio:1;width:auto}
 .mio-btn-icon.mio-btn-xs{width:var(--cds-h-control-xs)}
 .mio-btn-icon:not(.mio-btn-xs):not(.mio-btn-md){width:var(--cds-h-control-sm)}
@@ -733,7 +736,7 @@ function ready(){
     var o=b.innerHTML;b.textContent=lang()==='zh'?'已复制':'Copied';b.classList.add('is-copied');setTimeout(function(){b.innerHTML=o;b.classList.remove('is-copied')},2500)})});
   var dl=document.querySelector('[data-dialog-layer] .mio-dialog');
   if(dl){var go=function(){location.href=dl.getAttribute('data-cancel')||'/'};
-    dl.parentNode.querySelector('.mio-backdrop').addEventListener('click',function(e){e.preventDefault();go()});
+    var bd=dl.parentNode.querySelector('a.mio-backdrop');if(bd)bd.addEventListener('click',function(e){e.preventDefault();go()});
     document.addEventListener('keydown',function(e){
       if(e.key==='Escape'&&!e.isComposing){e.preventDefault();go();return}
       if(e.key==='Tab'){var f=[].slice.call(dl.querySelectorAll('input:not([type=hidden]):not([hidden]),select,textarea,button,a[href]'));if(!f.length)return;
