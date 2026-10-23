@@ -63,6 +63,11 @@ p{text-wrap:pretty}
 .mio-tabs a.active{color:var(--cds-text-primary);font-weight:500}
 .mio-tabs a.active::after{content:'';position:absolute;left:10px;right:10px;bottom:0;height:2px;border-radius:2px;background:var(--cds-accent)}
 .mio-tabs form{margin-left:auto;display:flex;gap:6px;align-items:center;padding:4px 0}
+/* 管理台仓库页：标签栏最右「设置」（Phosphor GearSix），只在 /~mio/ 里由 HTMLRewriter 追加 */
+.mio-tabs a.mio-tab-set{margin-left:auto;display:inline-flex;align-items:center;gap:6px}
+.mio-tabs form ~ a.mio-tab-set{margin-left:0}
+.mio-tabs a.mio-tab-set svg{width:16px;height:16px;flex:none}
+.rl-priv-h{align-self:center}
 select,input[type=text],input[type=search],input:not([type]){font:inherit;font-size:max(13px,.8125rem);color:var(--cds-text-primary);
   background:var(--cds-surface-3);border:0;box-shadow:inset 0 0 0 1px var(--cds-border);border-radius:var(--cds-radius);
   height:var(--cds-h-control-sm);padding:0 10px;transition:box-shadow var(--cds-dur-base) var(--cds-ease-swift)}
@@ -219,9 +224,14 @@ a.mio-btn{display:inline-flex;align-items:center;height:var(--cds-h-control-sm);
 .mio-btn-ghost{background:transparent!important;box-shadow:inset 0 0 0 1px var(--cds-border)}
 a.mio-btn-ghost:hover,button.mio-btn-ghost:hover{background:var(--cds-fill-ghost-hover)!important}
 .mio-auth{margin:0;display:inline-flex}
-a.mio-console{gap:6px;white-space:nowrap;flex:none}
-a.mio-console svg{width:14px;height:14px;flex:none;display:block}
-@media (max-width:420px){a.mio-console{padding:0 8px}.mio-console-l{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}}
+/* 顶栏登录入口：MioUI 顶栏「登录」= ghost 按钮（无边框，secondary 字，悬停 ghost-hover 填充）+ Phosphor SignIn / UserCircle */
+a.mio-auth-btn{gap:6px;white-space:nowrap;flex:none;padding:0 10px;background:transparent;color:var(--cds-text-secondary);
+  transition:color var(--cds-dur-base) var(--cds-ease-swift),background-color 150ms var(--cds-ease-swift)}
+a.mio-auth-btn:hover{background:var(--cds-fill-ghost-hover);color:var(--cds-text-primary)}
+a.mio-auth-btn:active{background:var(--cds-fill-ghost-selected)}
+a.mio-auth-btn:focus-visible{outline:none;box-shadow:var(--cds-focus-shadow)}
+a.mio-auth-btn svg{width:16px;height:16px;flex:none;display:block}
+@media (max-width:420px){a.mio-auth-btn{padding:0;width:var(--cds-h-control-sm);justify-content:center}.mio-auth-l{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}}
 .mio-dialog .ad-danger h3{color:var(--cds-text-danger)}
 .ad-danger-row{display:flex;align-items:center;gap:12px}
 .ad-danger-row .mio-note{margin:0;flex:1;min-width:0}
@@ -300,8 +310,6 @@ button.mio-btn-danger-solid:hover{filter:brightness(.95)}
 button.mio-btn-danger-solid:focus-visible{box-shadow:var(--cds-focus-shadow-danger)}
 .ad-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 16px}
 .ad-bar .ad-who{color:var(--cds-text-secondary);font-size:12.5px;margin-right:auto}
-.rl-set{margin-left:auto;font-size:12px;color:var(--cds-text-secondary)}
-.rl-set:hover{color:var(--cds-accent-text)}
 .tk-sub{display:none}
 @media (max-width:640px){.mio-dialog{padding:20px}.mio-row{flex-direction:column;align-items:stretch}.mio-row > .mio-field.mio-narrow{flex:1}
   table.tk{min-width:0}table.tk :is(th,td):is(.tk-c,.tk-used){display:none}
@@ -334,37 +342,68 @@ ul.repo-list li:hover{background:var(--cds-fill-ghost-hover)}
 .rl-lang i{width:10px;height:10px;border-radius:50%;display:inline-block;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)}
 .rl-meta time{font-variant-numeric:tabular-nums}
 .rl-size{font-variant-numeric:tabular-nums}
-.st-panel{background:var(--cds-surface-2);border-radius:var(--cds-radius-card);box-shadow:var(--cds-panel-shadow);padding:16px 18px;margin:0 0 20px}
-.st-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0 0 12px}
-.st-panel h2{margin:0;font-size:15px;font-weight:600;color:var(--cds-text-primary)}
-.st-total{font-size:20px;font-weight:600;color:var(--cds-text-primary);font-variant-numeric:tabular-nums}
-.st-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 14px}
-.st-kpis div{background:var(--cds-fill-secondary);border-radius:10px;padding:8px 12px;display:flex;flex-direction:column;gap:2px}
-.st-k{font-size:12px;color:var(--cds-text-secondary)}
-.st-v{font-size:17px;font-weight:600;color:var(--cds-text-primary);font-variant-numeric:tabular-nums}
-.st-quota{margin:0 0 10px}
-.st-row{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;color:var(--cds-text-secondary);margin:0 0 5px}
+.st-panel{background:var(--cds-surface-2);border-radius:var(--cds-radius-card);box-shadow:var(--cds-panel-shadow);padding:10px 16px;margin:0 0 16px;
+  display:flex;align-items:center;gap:8px 24px;flex-wrap:wrap}
+.st-head{display:flex;align-items:center;flex:none}
+.st-panel h2{margin:0;font-size:13.5px;font-weight:600;color:var(--cds-text-primary);display:inline-flex;align-items:center;gap:8px}
 .st-num{font-variant-numeric:tabular-nums;white-space:nowrap}
-.st-bar{height:6px;border-radius:999px;background:var(--cds-fill-secondary);overflow:hidden}
-.st-bar i,.st-mini i{display:block;height:100%;background:var(--cds-clay);border-radius:inherit}
-.st-panel h3{margin:14px 0 6px;font-size:12.5px;font-weight:600;color:var(--cds-text-secondary)}
-.st-top{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
-.st-top li{display:grid;grid-template-columns:minmax(0,9rem) 1fr auto;align-items:center;gap:10px;font-size:12.5px;color:var(--cds-text-secondary)}
-.st-top a{color:var(--cds-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.st-top a:hover{color:var(--cds-accent-text)}
-.st-mini{height:4px;border-radius:999px;background:var(--cds-fill-secondary);overflow:hidden}
-.st-panel h2{display:inline-flex;align-items:center;gap:8px}
+/* 小环：MioUI ProgressRing 的轨道 / 弧（fill-secondary + accent），值在环旁 */
+.st-rings{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;align-items:center;gap:8px 24px;flex:1;min-width:0}
+.st-ring-item{display:flex;align-items:center;gap:8px;min-width:0}
+.st-ring{width:32px;height:32px;flex:none;transform:rotate(-90deg)}
+.st-ring circle{fill:none;stroke-width:4}
+.st-ring-track{stroke:var(--cds-fill-secondary)}
+.st-ring-val{stroke:var(--cds-accent);stroke-linecap:round}
+.st-warn .st-ring-val{stroke:var(--cds-fill-warning)}
+.st-over .st-ring-val{stroke:var(--cds-fill-danger-solid)}
+.st-ring-t{display:flex;flex-direction:column;line-height:1.25;min-width:0}
+.st-ring-k{font-size:11.5px;color:var(--cds-text-secondary);white-space:nowrap}
+.st-ring-v{font-size:13px;font-weight:600;color:var(--cds-text-primary);font-variant-numeric:tabular-nums;white-space:nowrap}
+.st-ring-sub{margin-left:6px;font-weight:400;font-size:11.5px;color:var(--cds-text-secondary)}
+.st-warn .st-ring-v{color:var(--cds-text-warning)}
+.st-over .st-ring-v{color:var(--cds-text-danger)}
 .st-help{position:relative;display:inline-block}
 .st-help summary{list-style:none;cursor:pointer;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:600;color:var(--cds-text-secondary);background:var(--cds-fill-secondary)}
 .st-help summary::-webkit-details-marker{display:none}
 .st-help summary:hover,.st-help[open] summary{color:var(--cds-accent-foreground);background:var(--cds-clay)}
-.st-help summary:focus-visible{outline:2px solid var(--cds-clay);outline-offset:2px}
-.st-pop{position:absolute;left:0;top:26px;z-index:20;width:min(340px,80vw);background:var(--cds-surface-popover);border-radius:12px;box-shadow:var(--cds-panel-shadow),0 8px 24px rgba(0,0,0,.12);padding:12px 14px;font-size:12.5px;font-weight:400;line-height:1.55;color:var(--cds-text-primary)}
+.st-help summary:focus-visible{outline:none;box-shadow:var(--cds-focus-shadow)}
+.st-pop{position:absolute;left:0;top:26px;z-index:20;width:min(340px,80vw);max-height:70vh;overflow-y:auto;background:var(--cds-surface-popover);border-radius:12px;box-shadow:var(--cds-shadow-popover);padding:12px 14px;font-size:12.5px;font-weight:400;line-height:1.55;color:var(--cds-text-primary)}
 .st-pop b{display:block;margin:0 0 4px;font-size:13px}
-.st-pop ul{margin:0;padding-left:16px;color:var(--cds-text-secondary)}
+.st-pop ul{margin:0 0 10px;padding-left:16px;color:var(--cds-text-secondary)}
+.st-pop ul:last-child{margin-bottom:0}
 .st-pop li+li{margin-top:3px}
-.st-over .st-bar i{background:var(--cds-fill-danger-solid)}
-.st-over .st-num{color:var(--cds-fill-danger-solid)}
+.st-pop ul.st-facts{list-style:none;padding:0}
+.st-facts li{display:flex;justify-content:space-between;gap:12px}
+.st-facts li > :last-child{color:var(--cds-text-primary)}
+.st-facts a{color:var(--cds-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.st-facts a:hover{color:var(--cds-accent-text)}
+/* 仓库设置页（GitHub Settings 式）：左侧分区导航（MioUI SettingsCenterSidebar：≥720px 竖排，窄屏横向 pill 行）+ 分区面板 */
+.content:has(> .rs-page){background:none;box-shadow:none;overflow:visible;border-radius:0}
+.rs-page{display:grid;grid-template-columns:200px minmax(0,1fr);gap:24px;align-items:start}
+.rs-nav ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.rs-nav a{display:flex;align-items:center;gap:8px;min-height:36px;padding:0 12px;border-radius:var(--cds-radius);color:var(--cds-text-secondary);font-size:13.5px;white-space:nowrap;text-decoration:none;
+  transition:color var(--cds-dur-snap) var(--cds-ease-swift),background-color var(--cds-dur-snap) var(--cds-ease-swift)}
+.rs-nav a svg{width:18px;height:18px;flex:none}
+.rs-nav a:hover{background:var(--cds-fill-ghost-hover);color:var(--cds-text-primary)}
+.rs-nav a[aria-current=page]{background:var(--cds-fill-ghost-selected);color:var(--cds-text-primary);font-weight:500}
+.rs-nav a.is-danger,.rs-nav a.is-danger:hover{color:var(--cds-text-danger)}
+.rs-nav a:focus-visible{outline:none;box-shadow:var(--cds-focus-shadow)}
+.rs-main{min-width:0;display:flex;flex-direction:column;gap:16px}
+.rs-panel{background:var(--cds-surface-2);border-radius:var(--cds-radius-card);box-shadow:var(--cds-panel-shadow);padding:20px;display:flex;flex-direction:column;gap:16px;margin:0}
+.rs-panel-h h2{margin:0 0 4px;font-size:15px;line-height:1.4;font-weight:600;color:var(--cds-text-primary)}
+.rs-panel-h .mio-note{margin:0}
+.rs-note{margin:-6px 0 0}
+.rs-actions{display:flex;justify-content:flex-end;gap:8px;padding-top:4px}
+.rs-danger{box-shadow:0 0 0 1px color-mix(in srgb,var(--cds-fill-danger) 40%,transparent),var(--cds-shadow-sm)}
+.rs-danger .rs-panel-h h2{color:var(--cds-text-danger)}
+@media (max-width:719px){
+  .rs-page{grid-template-columns:minmax(0,1fr);gap:12px}
+  .rs-nav{overflow-x:auto;scrollbar-width:none;margin:0 -2px;padding:2px}
+  .rs-nav ul{flex-direction:row;gap:4px}
+  .rs-nav a{min-height:44px;padding:0 14px}
+  .rs-panel{padding:16px}
+  .rs-actions .mio-btn{flex:1;justify-content:center}
+}
 .blob-info{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px}
 .blob-edit{margin-left:auto;height:28px;padding:0 12px;font-size:12.5px}
 .content > form.ed-form{display:flex;flex-direction:column;flex-wrap:nowrap;align-items:stretch;gap:12px;text-align:left;padding:16px;box-shadow:none}
@@ -375,7 +414,7 @@ ul.repo-list li:hover{background:var(--cds-fill-ghost-hover)}
 .ed-text:focus-visible{outline:none;box-shadow:var(--cds-focus-shadow)}
 .ed-commit{display:flex;flex-direction:column;gap:10px}
 .ed-actions{display:flex;justify-content:flex-end;gap:8px}
-@media (max-width:640px){.st-panel{padding:14px}.st-top li{grid-template-columns:minmax(0,7rem) 1fr auto}}
+@media (max-width:640px){.st-panel{padding:10px 14px}.st-rings{flex:1 1 100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px}}
 @media (max-width:640px){
   ul.repo-list li{grid-template-columns:minmax(0,1fr);grid-template-areas:"name" "desc" "meta";padding:12px 14px}
   .rl-meta{gap:14px;margin-top:6px}

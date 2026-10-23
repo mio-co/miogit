@@ -19,7 +19,8 @@ import { gunzipLimited } from "./git/zlib";
 import type { RepoCell } from "./repo";
 import { envTokens, hasHint, resolveToken, secretsEqual as secretsEqualImpl } from "./auth";
 import { roleAllows, type Principal } from "./policy";
-import { createConsole, CONSOLE, GEAR } from "./admin";
+import { createConsole, CONSOLE } from "./admin";
+import { ICON_SIGN_IN, ICON_USER_CIRCLE } from "./ui/icons";
 
 export { RepoCell } from "./repo";
 export { Registry } from "./registry";
@@ -252,13 +253,15 @@ function decorate(res: Response, url: URL, req: Request): Response {
     if (typeof HTMLRewriter === "undefined") return res;
     return new HTMLRewriter().on("#mh-auth", { element(e) { e.remove(); } }).transform(res);
   }
-  // always shown: the console cookie never reaches these pages, so /~mio/ itself
-  // sends a signed-out visitor through /~mio/login and back to the console home
-  const html = `<a class='mio-btn mio-btn-secondary mio-auth mio-console' href='${CONSOLE}/' rel='nofollow' title='Console' data-zh-title='管理台'>${GEAR}<span class='mio-console-l'>${t("Console", "管理台")}</span></a>`;
-  if (typeof HTMLRewriter === "undefined") return new Response(res.body, res);
-  // signed-in hint (no secret, grants nothing): the logo leads back to the
-  // console list, which shows public and private repositories together
+  // the console cookie never reaches these pages; the signed-in hint cookie
+  // (no secret, grants nothing) only picks the label. /~mio/ itself still
+  // sends a visitor without a session through /~mio/login.
   const signed = hasHint(req);
+  const html = signed
+    ? `<a class='mio-btn mio-auth mio-auth-btn' href='${CONSOLE}/' rel='nofollow' title='Manage' data-zh-title='管理' data-auth='in'>${ICON_USER_CIRCLE}<span class='mio-auth-l'>${t("Manage", "管理")}</span></a>`
+    : `<a class='mio-btn mio-auth mio-auth-btn' href='${CONSOLE}/login' rel='nofollow' title='Sign in' data-zh-title='登录' data-auth='out'>${ICON_SIGN_IN}<span class='mio-auth-l'>${t("Sign in", "登录")}</span></a>`;
+  if (typeof HTMLRewriter === "undefined") return new Response(res.body, res);
+  // signed in: the logo leads back to the console list (public + private together)
   return new HTMLRewriter()
     .on("#mh-auth", { element(e) { e.replace(html, { html: true }); } })
     .on("a.mio-brand", { element(e) { if (signed) e.setAttribute("href", `${CONSOLE}/`); } })
@@ -339,22 +342,53 @@ function fmtRows(n: number): string {
   return n >= 10_000 ? `${(n / 10_000).toFixed(n >= 1_000_000 ? 0 : 1)} 万` : String(n);
 }
 
+function pctText(p: number): string {
+  if (p <= 0) return "0%";
+  if (p < 1) return `${p < 0.1 ? "<0.1" : p.toFixed(1)}%`;
+  return `${Math.round(p)}%`;
+}
+
+/**
+ * One compact row of small rings (MioUI ProgressRing / Progress variant="ring":
+ * SVG track in fill-secondary + accent arc, value next to it, no script).
+ * Exact numbers, the free-plan notes and the largest repositories sit in the
+ * existing "?" popover.
+ */
 function statsPanel(repos: RepoInfo[], usage: DoUsage | null = null, linkBase = ""): string {
   const db = repos.reduce((a, r) => a + (r.db_bytes || 0), 0);
   const r2 = repos.reduce((a, r) => a + (r.r2_bytes || 0), 0);
   const priv = repos.filter((r) => r.priv).length;
-  const bar = (used: number, cap: number) => {
+  const ring = (key: string, label: string, used: number, cap: number, sub: string, full: string) => {
     const pct = Math.min(100, (used / cap) * 100);
-    return `<div class='st-bar' role='progressbar' aria-valuemin='0' aria-valuemax='100' aria-valuenow='${pct.toFixed(1)}'><i style='width:${Math.max(pct, used ? 0.6 : 0).toFixed(2)}%'></i></div>`;
+    const arc = used > 0 ? Math.max(pct, 1.5) : 0;
+    const tone = used >= cap ? " st-over" : pct >= 80 ? " st-warn" : "";
+    return `<li class='st-ring-item${tone}' data-ring='${key}' title='${esc(full)}'>` +
+      `<svg class='st-ring' viewBox='0 0 36 36' role='img' aria-label='${esc(`${full} (${pctText(pct)})`)}'>` +
+      `<circle class='st-ring-track' cx='18' cy='18' r='15' pathLength='100'/>` +
+      (arc ? `<circle class='st-ring-val' cx='18' cy='18' r='15' pathLength='100' stroke-dasharray='${arc.toFixed(2)} 100'/>` : "") +
+      `</svg><span class='st-ring-t'><span class='st-ring-k'>${label}</span><span class='st-ring-v'>${pctText(pct)}<span class='st-ring-sub' data-noi18n>${sub}</span></span></span></li>`;
   };
   const top = [...repos].sort((a, b) => (b.db_bytes + b.r2_bytes) - (a.db_bytes + a.r2_bytes)).slice(0, 5).filter((r) => r.db_bytes + r.r2_bytes > 0);
-  const max = top[0] ? top[0].db_bytes + top[0].r2_bytes : 1;
-  const topRows = top.map((r) => {
-    const n = r.db_bytes + r.r2_bytes;
-    return `<li><a href='${linkBase}/${repoUrl(r.name)}/'>${esc(r.name)}</a><span class='st-mini'><i style='width:${((n / max) * 100).toFixed(1)}%'></i></span><span class='st-num'>${fmtBytes(n)}</span></li>`;
-  }).join("");
+  const topRows = top.map((r) => `<li><a href='${linkBase}/${repoUrl(r.name)}/'>${esc(r.name)}</a><span class='st-num'>${fmtBytes(r.db_bytes + r.r2_bytes)}</span></li>`).join("");
+  const rings =
+    ring("do", t("DO storage", "DO 存储"), db, FREE_DO_BYTES, fmtBytes(db), `Durable Objects ${fmtBytes(db)} / 5 GB`) +
+    ring("r2", t("R2 storage", "R2 存储"), r2, FREE_R2_BYTES, fmtBytes(r2), `R2 ${fmtBytes(r2)} / 10 GB`) +
+    (usage
+      ? ring("write", t("Writes today", "今日写入"), usage.written, FREE_ROWS_WRITTEN, fmtRows(usage.written), `DO rows written today ${usage.written} / 100000`) +
+        ring("read", t("Reads today", "今日读取"), usage.read, FREE_ROWS_READ, fmtRows(usage.read), `DO rows read today ${usage.read} / 5000000`)
+      : "");
   return `<section class='mio-card st-panel' aria-label='storage'>` +
-    `<div class='st-head'><h2>${t("Storage", "存储空间")}<details class='st-help'><summary aria-label='注意事项 / Notes' title='注意事项 / Notes'>?</summary><div class='st-pop' role='note'>` +
+    `<div class='st-head'><h2>${t("Storage", "存储")}<details class='st-help'><summary aria-label='详情 / Details' title='详情 / Details'>?</summary><div class='st-pop' role='note'>` +
+    `<b>${t("Usage", "用量")}</b><ul class='st-facts'>` +
+    `<li><span>${t("Total", "合计")}</span><span class='st-num'>${fmtBytes(db + r2)}</span></li>` +
+    `<li><span>Durable Objects</span><span class='st-num'>${fmtBytes(db)} / 5 GB</span></li>` +
+    `<li><span>R2</span><span class='st-num'>${fmtBytes(r2)} / 10 GB</span></li>` +
+    (usage
+      ? `<li><span>${t("Rows written today", "今日写入行数")}</span><span class='st-num'>${fmtRows(usage.written)} / 10 万</span></li>` +
+        `<li><span>${t("Rows read today", "今日读取行数")}</span><span class='st-num'>${fmtRows(usage.read)} / 500 万</span></li>`
+      : "") +
+    `<li><span>${t("Repositories", "仓库")}</span><span class='st-num'>${repos.length}（${t("private", "私有")} ${priv}）</span></li></ul>` +
+    (topRows ? `<b>${t("Largest repositories", "占用最多")}</b><ul class='st-facts st-top'>${topRows}</ul>` : "") +
     `<b>${t("Free plan limits", "免费版额度")}</b><ul>` +
     `<li>${t("Durable Objects: 5M rows read and 100K rows written per day.", "Durable Objects 每天最多读 500 万行、写 10 万行。")}</li>` +
     `<li>${t("Resets daily at 00:00 UTC (08:00 Beijing).", "每天 UTC 0 点（北京时间 8 点）重置。")}</li>` +
@@ -362,19 +396,8 @@ function statsPanel(repos: RepoInfo[], usage: DoUsage | null = null, linkBase = 
     `<li>${t("Writes count per git object, so first imports of large histories may need several days.", "写入按 git 对象计，大仓库首次导入完整历史可能要分几天推。")}</li>` +
     `<li>${t("Each push is capped at 100 MB; push big repos branch by branch.", "单次推送上限 100 MB，大仓库按分支分批推。")}</li>` +
     `<li>${t("Storage: 5 GB in Durable Objects, 10 GB in R2.", "存储：Durable Objects 5 GB，R2 10 GB。")}</li>` +
-    `</ul></div></details></h2><span class='st-total'>${fmtBytes(db + r2)}</span></div>` +
-    `<div class='st-kpis'>` +
-    `<div><span class='st-k'>${t("Repositories", "仓库")}</span><span class='st-v'>${repos.length}</span></div>` +
-    `<div><span class='st-k'>${t("Private", "私有")}</span><span class='st-v'>${priv}</span></div>` +
-    `<div><span class='st-k'>${t("Public", "公开")}</span><span class='st-v'>${repos.length - priv}</span></div></div>` +
-    `<div class='st-quota'><div class='st-row'><span>Durable Objects</span><span class='st-num'>${fmtBytes(db)} / 5 GB</span></div>${bar(db, FREE_DO_BYTES)}</div>` +
-    `<div class='st-quota'><div class='st-row'><span>R2</span><span class='st-num'>${fmtBytes(r2)} / 10 GB</span></div>${bar(r2, FREE_R2_BYTES)}</div>` +
-    (usage
-      ? `<h3>${t("Today's Durable Objects usage (UTC day)", "今日 Durable Objects 用量")}</h3>` +
-        `<div class='st-quota${usage.read >= FREE_ROWS_READ ? " st-over" : ""}'><div class='st-row'><span>${t("Rows read", "读取行数")}</span><span class='st-num'>${fmtRows(usage.read)} / 500 万</span></div>${bar(usage.read, FREE_ROWS_READ)}</div>` +
-        `<div class='st-quota${usage.written >= FREE_ROWS_WRITTEN ? " st-over" : ""}'><div class='st-row'><span>${t("Rows written", "写入行数")}</span><span class='st-num'>${fmtRows(usage.written)} / 10 万</span></div>${bar(usage.written, FREE_ROWS_WRITTEN)}</div>`
-      : "") +
-    (topRows ? `<h3>${t("Largest repositories", "占用最多")}</h3><ul class='st-top'>${topRows}</ul>` : "") +
+    `</ul></div></details></h2></div>` +
+    `<ul class='st-rings'>${rings}</ul>` +
     `</section>`;
 }
 
@@ -398,7 +421,6 @@ async function indexBody(env: Env, signedIn = false, settings = false): Promise<
       `<span class='rl-owner'>${esc(r.owner || env.SITE_OWNER || "")}</span>` +
       (signedIn && r.db_bytes + r.r2_bytes > 0 ? `<span class='rl-size' data-noi18n>${fmtBytes(r.db_bytes + r.r2_bytes)}</span>` : "") +
       `<time datetime='${iso}' title='${iso.slice(0, 16).replace("T", " ")} UTC'>${age(secs)}</time>` +
-      (settings ? `<a class='rl-set' href='${CONSOLE}/repos/${repoUrl(r.name)}'>${t("Settings", "设置")}</a>` : "") +
       `</div></li>`;
   }
   const sortBar = repos.length > 1

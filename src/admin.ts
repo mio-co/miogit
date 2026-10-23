@@ -34,6 +34,7 @@ import {
   verifyPassword,
 } from "./auth";
 import { isRole, type Role } from "./policy";
+import { ICON_GEAR_SIX, ICON_GLOBE, ICON_SLIDERS, ICON_WARNING } from "./ui/icons";
 
 export const CONSOLE = "/~mio";
 
@@ -48,7 +49,6 @@ export interface ConsoleDeps {
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const LOCK = `<svg viewBox='0 0 256 256' aria-hidden='true'><rect x='40' y='88' width='176' height='128' rx='8' fill='none' stroke='currentColor' stroke-width='16'/><path d='M88 88V56a40 40 0 0 1 80 0v32' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
 const KEY = `<svg viewBox='0 0 256 256' aria-hidden='true'><circle cx='92' cy='164' r='44' fill='none' stroke='currentColor' stroke-width='16'/><path d='M123 133l85-85M176 80l24 24M152 104l20 20' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
-export const GEAR = `<svg viewBox='0 0 256 256' aria-hidden='true'><circle cx='128' cy='128' r='40' fill='none' stroke='currentColor' stroke-width='16'/><path d='M128 24v24M128 208v24M24 128h24M208 128h24M54 54l17 17M185 185l17 17M54 202l17-17M185 71l17-17' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
 const WARN = `<svg viewBox='0 0 256 256' aria-hidden='true'><path d='M128 32 16 216h224Z' fill='none' stroke='currentColor' stroke-width='16' stroke-linejoin='round'/><path d='M128 104v48' stroke='currentColor' stroke-width='16' stroke-linecap='round'/><circle cx='128' cy='184' r='10' fill='currentColor'/></svg>`;
 
 const ROLE_LABEL: Record<Role, [string, string]> = {
@@ -259,65 +259,98 @@ export function createConsole(deps: ConsoleDeps) {
     );
   }
 
-  async function repoSettingsPage(env: Env, csrf: string, info: RepoInfo, error = ""): Promise<Response> {
-    const body = `
-  ${error ? `<div class='mio-dialog-err' role='alert'>${error}</div>` : ""}
-  <input type='hidden' name='csrf' value='${esc(csrf)}'/>
-  <label class='mio-field'><span>${t("Description", "描述")}</span><textarea name='description' maxlength='500' rows='2'>${esc(info.desc)}</textarea></label>
+  type SettingsSection = "general" | "visibility" | "danger";
+  const SECTIONS: SettingsSection[] = ["general", "visibility", "danger"];
+  const asSection = (v: string | null): SettingsSection => ((SECTIONS as string[]).includes(v ?? "") ? (v as SettingsSection) : "general");
+
+  /**
+   * Repository settings as its own page in the repository layout (GitHub-style):
+   * repo title + tab bar with "Settings" active, a section nav (General /
+   * Visibility / Danger zone, one page each, ?s=…) and one panel per section.
+   * Built from mio-field / mio-check / mio-btn and CDS tokens; no dialog, no script.
+   */
+  async function repoSettingsPage(env: Env, csrf: string, info: RepoInfo, section: SettingsSection, opts: { error?: string; notice?: string } = {}): Promise<Response> {
+    const href = `${CONSOLE}/repos/${repoUrl(info.name)}`;
+    const nav: [SettingsSection, string, string][] = [
+      ["general", ICON_SLIDERS, t("General", "常规")],
+      ["visibility", ICON_GLOBE, t("Visibility", "可见性")],
+      ["danger", ICON_WARNING, t("Danger zone", "危险区")],
+    ];
+    const navHtml =
+      `<nav class='rs-nav' aria-label='Settings'><ul>` +
+      nav.map(([id, icon, label]) => `<li><a href='${href}?s=${id}'${id === section ? " aria-current='page'" : ""}${id === "danger" ? " class='is-danger'" : ""}>${icon}${label}</a></li>`).join("") +
+      `</ul></nav>`;
+    const alert = (opts.error ? `<div class='mio-dialog-err' role='alert'>${opts.error}</div>` : "") + (opts.notice ? `<div class='mio-dialog-ok' role='status'>${opts.notice}</div>` : "");
+    const csrfIn = `<input type='hidden' name='csrf' value='${esc(csrf)}'/>`;
+    const priv = !!info.priv;
+    let panel: string;
+    if (section === "general") {
+      panel = `<form class='rs-panel' method='post' action='${href}'>${csrfIn}<input type='hidden' name='s' value='general'/>
+  <div class='rs-panel-h'><h2>${t("General", "常规")}</h2><p class='mio-note'>${t("Shown on the repository list and the repository page.", "显示在仓库列表和仓库页上。")}</p></div>
+  ${alert}
+  <label class='mio-field'><span>${t("Description", "描述")}</span><textarea name='description' maxlength='500' rows='3'>${esc(info.desc)}</textarea></label>
   <div class='mio-row'>
     <label class='mio-field'><span>${t("Owner", "所有者")}</span><input type='text' name='owner' maxlength='64' value='${esc(info.owner)}' autocomplete='off'/></label>
     <label class='mio-field'><span>${t("Section", "分组")}</span><input type='text' name='section' maxlength='64' value='${esc(info.section)}' autocomplete='off'/></label>
   </div>
-  <label class='mio-check'><input type='checkbox' name='private' value='1'${info.priv ? " checked" : ""}/><span>${t("Private (requires a token to read)", "私有（需要令牌才能读取）")}</span></label>
-  <div class='mio-dialog-actions'>
-    <a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/' data-dialog-cancel>${t("Cancel", "取消")}</a>
-    <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Save", "保存")}</button>
-  </div>
-  <div class='mio-sec ad-danger'>
-    <h3>${t("Danger zone", "危险区")}</h3>
-    <div class='ad-danger-row'>
-      <p class='mio-note'>${t("Delete this repository with all branches, tags and history. This cannot be undone.", "删除这个仓库及全部分支、标签和历史，不能恢复。")}</p>
-      <a class='mio-btn mio-btn-danger mio-btn-md' href='${CONSOLE}/repos/${repoUrl(info.name)}/delete'>${t("Delete repository", "删除仓库")}</a>
-    </div>
-  </div>`;
-    return page(
-      env,
-      dialog({
-        icon: GEAR,
-        title: `<span data-noi18n>${esc(info.name)}</span> · ${t("Settings", "仓库设置")}`,
-        body,
-        cancel: `${CONSOLE}/`,
-        formAction: `${CONSOLE}/repos/${repoUrl(info.name)}`,
-      }),
-      error ? 400 : 200
-    );
+  <div class='rs-actions'><button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Save", "保存")}</button></div>
+</form>`;
+    } else if (section === "visibility") {
+      panel = `<form class='rs-panel' method='post' action='${href}'>${csrfIn}<input type='hidden' name='s' value='visibility'/>
+  <div class='rs-panel-h'><h2>${t("Visibility", "可见性")}</h2><p class='mio-note'>${t("Currently", "当前")} <span class='mio-badge'>${priv ? t("Private", "私有") : t("Public", "公开")}</span></p></div>
+  ${alert}
+  <label class='mio-check'><input type='checkbox' name='private' value='1'${priv ? " checked" : ""}/><span>${t("Private (requires a token to read)", "私有（需要令牌才能读取）")}</span></label>
+  <p class='mio-note rs-note'>${t("Public repositories can be browsed and cloned by anyone. Private ones only open in this console or with an access token.", "公开仓库任何人都能浏览和 clone；私有仓库只能在管理台里打开，或用访问令牌读取。")}</p>
+  <div class='rs-actions'><button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Save", "保存")}</button></div>
+</form>`;
+    } else {
+      // native constraint validation (no script): the button only submits once the exact name is typed; the server checks it again
+      const pattern = info.name.replace(/\./g, "\\.");
+      panel = `<form class='rs-panel rs-danger' method='post' action='${href}/delete'>${csrfIn}
+  <div class='rs-panel-h'><h2>${t("Delete this repository", "删除仓库")}</h2><p class='mio-note'>${t("All branches, tags, history and settings of this repository are removed, and clones stop working. This cannot be undone.", "这个仓库的全部分支、标签、历史和设置都会被清除，clone 会失效。不能恢复。")}</p></div>
+  ${alert}
+  <label class='mio-field'><span>${t("Type the repository name to confirm", "输入完整仓库名以确认")}: <b class='mono' data-noi18n>${esc(info.name)}</b></span><input type='text' name='confirm' required pattern='${esc(pattern)}' autocomplete='off' autocapitalize='off' spellcheck='false' data-noi18n${opts.error ? " aria-invalid='true'" : ""}/></label>
+  <div class='rs-actions'><button type='submit' class='mio-btn mio-btn-danger-solid mio-btn-md'>${t("Delete repository", "删除仓库")}</button></div>
+</form>`;
+    }
+    const body = `<section class='rs-page'>${navHtml}<div class='rs-main'>${panel}</div></section>`;
+    const res = htmlResponse(layout({ ...deps.siteBase(env), title: `${info.name} · settings`, repo: info.name, sub: info.desc, tab: "settings", body }), opts.error ? 400 : 200);
+    return noStore(repoChrome(res, info.name, priv, true));
   }
 
-  async function deleteRepoPage(env: Env, csrf: string, info: RepoInfo, error = ""): Promise<Response> {
-    // native constraint validation (no script): the button only submits once the exact name is typed;
-    // the server checks it again
-    const pattern = info.name.replace(/\./g, "\\.");
-    const body = `
-  ${error ? `<div class='mio-dialog-err' role='alert'>${error}</div>` : ""}
-  <input type='hidden' name='csrf' value='${esc(csrf)}'/>
-  <label class='mio-field'><span>${t("Type the repository name to confirm", "输入完整仓库名以确认")}: <b class='mono' data-noi18n>${esc(info.name)}</b></span><input type='text' name='confirm' required pattern='${esc(pattern)}' autocomplete='off' autocapitalize='off' spellcheck='false' autofocus data-noi18n${error ? " aria-invalid='true'" : ""}/></label>
-  <div class='mio-dialog-actions'>
-    <a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/repos/${repoUrl(info.name)}' data-dialog-cancel>${t("Cancel", "取消")}</a>
-    <button type='submit' class='mio-btn mio-btn-danger-solid mio-btn-md'>${t("Delete repository", "删除仓库")}</button>
-  </div>`;
-    return page(
-      env,
-      dialog({
-        icon: WARN,
-        danger: true,
-        title: `${t("Delete", "删除")} <span data-noi18n>${esc(info.name)}</span>?`,
-        desc: t("All branches, tags, history and settings of this repository are removed, and clones stop working. This cannot be undone.", "这个仓库的全部分支、标签、历史和设置都会被清除，clone 会失效。不能恢复。"),
-        body,
-        cancel: `${CONSOLE}/repos/${repoUrl(info.name)}`,
-        formAction: `${CONSOLE}/repos/${repoUrl(info.name)}/delete`,
-      }),
-      error ? 400 : 200
-    );
+  /**
+   * Console chrome for a repository page: links re-rooted under /~mio/r/<repo>/,
+   * the logo back to the console list, a "Private" badge next to the title and
+   * a "Settings" tab at the end of the tab bar (console only; public pages never
+   * get it).
+   */
+  function repoChrome(res: Response, repo: string, priv: boolean, settingsActive: boolean, extra?: (rw: HTMLRewriter) => HTMLRewriter): Response {
+    if (typeof HTMLRewriter === "undefined") return res;
+    const base = `/${repoUrl(repo)}`;
+    const mount = `${CONSOLE}/r${base}`;
+    const fix = (v: string | null): string | null => {
+      if (v === null) return null;
+      if (v === "/") return `${CONSOLE}/`;
+      if (v === base || v.startsWith(`${base}/`) || v.startsWith(`${base}?`)) return mount + v.slice(base.length);
+      return null;
+    };
+    const attr = (name: string) => ({
+      element(e: Element) {
+        const v = fix(e.getAttribute(name));
+        if (v !== null) e.setAttribute(name, v);
+      },
+    });
+    const tab = `<a class='mio-tab-set${settingsActive ? " active" : ""}' href='${CONSOLE}/repos/${repoUrl(repo)}'${settingsActive ? " aria-current='page'" : ""}>${ICON_GEAR_SIX}${t("Settings", "设置")}</a>`;
+    let rw = new HTMLRewriter()
+      .on("a[href]", attr("href"))
+      .on("link[href]", attr("href"))
+      .on("img[src]", attr("src"))
+      .on("form[action]", attr("action"))
+      .on(".mio-head h1", { element(e) { if (priv) e.after(`<span class='mio-badge rl-priv-h'>${t("Private", "私有")}</span>`, { html: true }); } })
+      .on("nav.mio-tabs", { element(e) { e.append(tab, { html: true }); } });
+    if (extra) rw = extra(rw);
+    const out = rw.transform(res);
+    return new Response(out.body, out);
   }
 
   /**
@@ -325,7 +358,7 @@ export function createConsole(deps: ConsoleDeps) {
    * private repository is readable with the console session (behind Access)
    * and every in-page link, the branch switcher and the logo stay in the console.
    */
-  async function viewer(req: Request, env: Env, repo: string, sub: string): Promise<Response> {
+  async function viewer(req: Request, env: Env, repo: string, sub: string, priv: boolean): Promise<Response> {
     const url = new URL(req.url);
     const doUrl = new URL(req.url);
     doUrl.pathname = sub;
@@ -343,34 +376,17 @@ export function createConsole(deps: ConsoleDeps) {
       out.headers.set("x-content-type-options", "nosniff");
       return out;
     }
-    const base = `/${repoUrl(repo)}`;
-    const mount = `${CONSOLE}/r${base}`;
-    const fix = (v: string | null): string | null => {
-      if (v === null) return null;
-      if (v === "/") return `${CONSOLE}/`;
-      if (v === base || v.startsWith(`${base}/`) || v.startsWith(`${base}?`)) return mount + v.slice(base.length);
-      return null;
-    };
-    const attr = (name: string) => ({
-      element(e: Element) {
-        const v = fix(e.getAttribute(name));
-        if (v !== null) e.setAttribute(name, v);
-      },
-    });
-    const out = new HTMLRewriter()
-      .on("a[href]", attr("href"))
-      .on("link[href]", attr("href"))
-      .on("img[src]", attr("src"))
-      .on("form[action]", attr("action"))
-      .on("#mh-edit", {
-        element(e) {
-          const href = e.getAttribute("data-href");
-          if (href && href.startsWith("/")) e.replace(`<a class='mio-btn mio-btn-secondary blob-edit' href='${CONSOLE}/edit${href.replace(/^\/([^/]+)\/edit/, "/$1").replace(/'/g, "%27")}'>${t("Edit", "编辑")}</a>`, { html: true });
-          else e.remove();
-        },
-      })
-      .transform(res);
-    return noStore(new Response(out.body, out));
+    return noStore(
+      repoChrome(res, repo, priv, false, (rw) =>
+        rw.on("#mh-edit", {
+          element(e) {
+            const href = e.getAttribute("data-href");
+            if (href && href.startsWith("/")) e.replace(`<a class='mio-btn mio-btn-secondary blob-edit' href='${CONSOLE}/edit${href.replace(/^\/([^/]+)\/edit/, "/$1").replace(/'/g, "%27")}'>${t("Edit", "编辑")}</a>`, { html: true });
+            else e.remove();
+          },
+        })
+      )
+    );
   }
 
   /** Forward a web-editor request to the repository cell, with the console's own form action + CSRF token. */
@@ -555,12 +571,13 @@ export function createConsole(deps: ConsoleDeps) {
         return text("bad repository name", 400);
       }
       if (!REPO_NAME.test(name)) return text("bad repository name", 400);
-      if (!(await registry.get(name))) return text(`no such repository: ${name}`, 404);
+      const vinfo = await registry.get(name);
+      if (!vinfo) return text(`no such repository: ${name}`, 404);
       const rest = vw[2];
       if (!rest) return redirect(`${CONSOLE}/r/${repoUrl(name)}/${url.search}`);
       // pages only: git protocol, the JSON API and the editor have their own doors
       if (/^\/(info\/refs|git-upload-pack|git-receive-pack)$/.test(rest) || rest.startsWith("/api/") || rest === "/edit" || rest.startsWith("/edit/")) return text("not found", 404);
-      return viewer(req, env, name, rest);
+      return viewer(req, env, name, rest, !!vinfo.priv);
     }
 
     // ---- delete a repository (console only; git tokens, admin included, cannot) ----
@@ -575,14 +592,14 @@ export function createConsole(deps: ConsoleDeps) {
       if (!REPO_NAME.test(name)) return text("bad repository name", 400);
       const info = await registry.get(name);
       if (!info) return req.method === "GET" ? redirect(`${CONSOLE}/`) : text(`no such repository: ${name}`, 404);
-      if (req.method === "GET") return deleteRepoPage(env, csrf, info);
-      if (String(form!.get("confirm") ?? "") !== name) return deleteRepoPage(env, csrf, info, t("The name does not match. Nothing was deleted.", "仓库名不一致，未删除。"));
+      if (req.method === "GET") return redirect(`${CONSOLE}/repos/${repoUrl(name)}?s=danger`);
+      if (String(form!.get("confirm") ?? "") !== name) return repoSettingsPage(env, csrf, info, "danger", { error: t("The name does not match. Nothing was deleted.", "仓库名不一致，未删除。") });
       // wipe the cell (SQLite tables + alarm) and its R2 packs first, then the registry row:
       // if the wipe fails the repository stays listed and can be retried
       const res = await env.REPO.getByName(name).fetch(
         new Request(`${url.origin}/`, { method: "DELETE", headers: { "x-repo": name, "x-host": url.host, "x-mio-role": "admin", "x-mio-token": "console" } })
       );
-      if (!res.ok) return deleteRepoPage(env, csrf, info, esc((await res.text()).slice(0, 200)));
+      if (!res.ok) return repoSettingsPage(env, csrf, info, "danger", { error: esc((await res.text()).slice(0, 200)) });
       await registry.remove(name);
       await deps.invalidate(name, url.origin);
       return redirect(`${CONSOLE}/?done=deleted&name=${encodeURIComponent(name)}`);
@@ -600,13 +617,22 @@ export function createConsole(deps: ConsoleDeps) {
       if (!REPO_NAME.test(name)) return text("bad repository name", 400);
       const info = await registry.get(name);
       if (!info) return text(`no such repository: ${name}`, 404);
-      if (req.method === "GET") return repoSettingsPage(env, csrf, info);
+      if (req.method === "GET") {
+        const sec = asSection(url.searchParams.get("s"));
+        return repoSettingsPage(env, csrf, info, sec, { notice: url.searchParams.get("done") === "1" ? t("Settings saved.", "设置已保存。") : "" });
+      }
+      // each section page posts only its own fields (s=general | visibility);
+      // the rest keep their current values. Without s, every field comes from the form.
+      const part = String(form!.get("s") ?? "");
+      const general = part !== "visibility";
+      const visibility = part !== "general";
       const cfg = {
-        description: String(form!.get("description") ?? "").trim().slice(0, 500),
-        owner: String(form!.get("owner") ?? "").trim().slice(0, 64),
-        section: String(form!.get("section") ?? "").trim().slice(0, 64),
-        private: form!.get("private") === "1",
+        description: general ? String(form!.get("description") ?? "").trim().slice(0, 500) : info.desc,
+        owner: general ? String(form!.get("owner") ?? "").trim().slice(0, 64) : info.owner,
+        section: general ? String(form!.get("section") ?? "").trim().slice(0, 64) : info.section,
+        private: visibility ? form!.get("private") === "1" : !!info.priv,
       };
+      const sec: SettingsSection = part === "visibility" ? "visibility" : "general";
       const res = await env.REPO.getByName(name).fetch(
         new Request(`${url.origin}/config`, {
           method: "PUT",
@@ -614,11 +640,11 @@ export function createConsole(deps: ConsoleDeps) {
           body: JSON.stringify(cfg),
         })
       );
-      if (!res.ok) return repoSettingsPage(env, csrf, info, esc((await res.text()).slice(0, 200)));
+      if (!res.ok) return repoSettingsPage(env, csrf, info, sec, { error: esc((await res.text()).slice(0, 200)) });
       const idle = parseInt(res.headers.get("x-commit-time") ?? "", 10) || info.idle;
       await registry.setConfig(name, { desc: cfg.description, owner: cfg.owner, section: cfg.section, priv: cfg.private }, idle, res.headers.get("x-main-lang") ?? undefined);
       deps.invalidate(name);
-      return redirect(`${CONSOLE}/?done=settings`);
+      return redirect(`${CONSOLE}/repos/${repoUrl(name)}?s=${sec}&done=1`);
     }
 
     // ---- web editor: GET /~mio/edit/<repo>/<path>?h=<branch>, POST /~mio/edit/<repo> ----
