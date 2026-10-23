@@ -16,7 +16,10 @@ import {
   adminPasswordHash,
   adminUser,
   clearSessionCookie,
+  clearHintCookie,
   csrfToken,
+  hasHint,
+  hintCookie,
   csrfValid,
   hashPassword,
   makeSession,
@@ -59,9 +62,9 @@ function noStore(res: Response): Response {
   return res;
 }
 
-function redirect(to: string, cookie?: string): Response {
+function redirect(to: string, ...cookies: string[]): Response {
   const h = new Headers({ location: to, "cache-control": "no-store" });
-  if (cookie) h.append("set-cookie", cookie);
+  for (const c of cookies) h.append("set-cookie", c);
   return new Response(null, { status: 303, headers: h });
 }
 
@@ -317,6 +320,59 @@ export function createConsole(deps: ConsoleDeps) {
     );
   }
 
+  /**
+   * Repository pages rendered by the cell, re-rooted under /~mio/r/<repo>/ so a
+   * private repository is readable with the console session (behind Access)
+   * and every in-page link, the branch switcher and the logo stay in the console.
+   */
+  async function viewer(req: Request, env: Env, repo: string, sub: string): Promise<Response> {
+    const url = new URL(req.url);
+    const doUrl = new URL(req.url);
+    doUrl.pathname = sub;
+    const headers = new Headers({ "x-repo": repo, "x-host": url.host, "x-proto": url.protocol.replace(":", ""), "x-mio-role": "reader", "x-mio-token": "console" });
+    for (const k of ["accept", "accept-language", "if-none-match"]) {
+      const v = req.headers.get(k);
+      if (v) headers.set(k, v);
+    }
+    const res = await env.REPO.getByName(repo).fetch(new Request(doUrl.toString(), { method: req.method, headers }));
+    const html = (res.headers.get("content-type") ?? "").startsWith("text/html");
+    if (!html || typeof HTMLRewriter === "undefined") {
+      // raw files / archives / feeds under the console origin: never let them run anything
+      const out = noStore(new Response(res.body, res));
+      if (!html) out.headers.set("content-security-policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox");
+      out.headers.set("x-content-type-options", "nosniff");
+      return out;
+    }
+    const base = `/${repoUrl(repo)}`;
+    const mount = `${CONSOLE}/r${base}`;
+    const fix = (v: string | null): string | null => {
+      if (v === null) return null;
+      if (v === "/") return `${CONSOLE}/`;
+      if (v === base || v.startsWith(`${base}/`) || v.startsWith(`${base}?`)) return mount + v.slice(base.length);
+      return null;
+    };
+    const attr = (name: string) => ({
+      element(e: Element) {
+        const v = fix(e.getAttribute(name));
+        if (v !== null) e.setAttribute(name, v);
+      },
+    });
+    const out = new HTMLRewriter()
+      .on("a[href]", attr("href"))
+      .on("link[href]", attr("href"))
+      .on("img[src]", attr("src"))
+      .on("form[action]", attr("action"))
+      .on("#mh-edit", {
+        element(e) {
+          const href = e.getAttribute("data-href");
+          if (href && href.startsWith("/")) e.replace(`<a class='mio-btn mio-btn-secondary blob-edit' href='${CONSOLE}/edit${href.replace(/^\/([^/]+)\/edit/, "/$1").replace(/'/g, "%27")}'>${t("Edit", "编辑")}</a>`, { html: true });
+          else e.remove();
+        },
+      })
+      .transform(res);
+    return noStore(new Response(out.body, out));
+  }
+
   /** Forward a web-editor request to the repository cell, with the console's own form action + CSRF token. */
   async function editor(req: Request, env: Env, repo: string, sub: string, csrf: string, session: string, passHash: string): Promise<Response> {
     const url = new URL(req.url);
@@ -363,6 +419,17 @@ export function createConsole(deps: ConsoleDeps) {
 
   /** Entry point for every path under /~mio (and /~mio itself). */
   async function handle(req: Request, env: Env): Promise<Response> {
+    const res = await route(req, env);
+    // a stale signed-in hint (session expired or signed out elsewhere) is dropped
+    // as soon as the console sees the browser without a valid session
+    if (!hasHint(req) || (res.headers.get("set-cookie") ?? "").includes("mg_signed=")) return res;
+    if (await validSession(req, env, await adminPasswordHash(env))) return res;
+    const out = new Response(res.body, res);
+    out.headers.append("set-cookie", clearHintCookie());
+    return out;
+  }
+
+  async function route(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
     if (path === CONSOLE) return redirect(`${CONSOLE}/`);
@@ -404,7 +471,7 @@ export function createConsole(deps: ConsoleDeps) {
         return loginPage(env, next, t("Wrong username or password.", "用户名或密码不正确。"), user);
       }
       await registry.loginSucceeded(ip);
-      return redirect(next, sessionCookie(await makeSession(env, passHash)));
+      return redirect(next, sessionCookie(await makeSession(env, passHash)), hintCookie());
     }
 
     if (!session || !passHash) {
@@ -420,7 +487,7 @@ export function createConsole(deps: ConsoleDeps) {
       if (!(await csrfValid(env, passHash, session, (form?.get("csrf") as string | null) ?? null))) return text("bad CSRF token", 403);
     }
 
-    if (sub === "/logout" && req.method === "POST") return redirect("/", clearSessionCookie());
+    if (sub === "/logout" && req.method === "POST") return redirect("/", clearSessionCookie(), clearHintCookie());
     if (sub === "/" && req.method === "GET") {
       const n = url.searchParams.get("done");
       const dn = url.searchParams.get("name") ?? "";
@@ -473,7 +540,26 @@ export function createConsole(deps: ConsoleDeps) {
       const h = await hashPassword(next);
       await registry.setSetting("admin_password_hash", h);
       // the session key is bound to the hash: everyone else is signed out, this browser gets a fresh cookie
-      return redirect(`${CONSOLE}/?done=password`, sessionCookie(await makeSession(env, h)));
+      return redirect(`${CONSOLE}/?done=password`, sessionCookie(await makeSession(env, h)), hintCookie());
+    }
+
+    // ---- browse any repository (public or private) inside the console: /~mio/r/<repo>/<page> ----
+    const vw = /^\/r\/([^/]+)(\/.*)?$/.exec(sub);
+    if (vw) {
+      if (req.method !== "GET" && req.method !== "HEAD") return text("method not allowed", 405);
+      let name: string;
+      try {
+        name = decodeURIComponent(vw[1]);
+      } catch {
+        return text("bad repository name", 400);
+      }
+      if (!REPO_NAME.test(name)) return text("bad repository name", 400);
+      if (!(await registry.get(name))) return text(`no such repository: ${name}`, 404);
+      const rest = vw[2];
+      if (!rest) return redirect(`${CONSOLE}/r/${repoUrl(name)}/${url.search}`);
+      // pages only: git protocol, the JSON API and the editor have their own doors
+      if (/^\/(info\/refs|git-upload-pack|git-receive-pack)$/.test(rest) || rest.startsWith("/api/") || rest === "/edit" || rest.startsWith("/edit/")) return text("not found", 404);
+      return viewer(req, env, name, rest);
     }
 
     // ---- delete a repository (console only; git tokens, admin included, cannot) ----

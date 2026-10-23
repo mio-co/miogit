@@ -17,7 +17,7 @@ import { parseUploadRequest, streamingCloneResponse } from "./git/protocol";
 import { isOid } from "./git/util";
 import { gunzipLimited } from "./git/zlib";
 import type { RepoCell } from "./repo";
-import { envTokens, resolveToken, secretsEqual as secretsEqualImpl } from "./auth";
+import { envTokens, hasHint, resolveToken, secretsEqual as secretsEqualImpl } from "./auth";
 import { roleAllows, type Principal } from "./policy";
 import { createConsole, CONSOLE, GEAR } from "./admin";
 
@@ -246,7 +246,7 @@ function redirect(to: string, cookie?: string): Response {
  * to /~mio/ and never reaches these pages). The blob page's edit slot links
  * to the console editor.
  */
-function decorate(res: Response, url: URL): Response {
+function decorate(res: Response, url: URL, req: Request): Response {
   if (!(res.headers.get("content-type") ?? "").startsWith("text/html")) return res;
   if (url.pathname === CONSOLE || url.pathname.startsWith(`${CONSOLE}/`)) {
     if (typeof HTMLRewriter === "undefined") return res;
@@ -256,8 +256,12 @@ function decorate(res: Response, url: URL): Response {
   // sends a signed-out visitor through /~mio/login and back to the console home
   const html = `<a class='mio-btn mio-btn-secondary mio-auth mio-console' href='${CONSOLE}/' rel='nofollow' title='Console' data-zh-title='管理台'>${GEAR}<span class='mio-console-l'>${t("Console", "管理台")}</span></a>`;
   if (typeof HTMLRewriter === "undefined") return new Response(res.body, res);
+  // signed-in hint (no secret, grants nothing): the logo leads back to the
+  // console list, which shows public and private repositories together
+  const signed = hasHint(req);
   return new HTMLRewriter()
     .on("#mh-auth", { element(e) { e.replace(html, { html: true }); } })
+    .on("a.mio-brand", { element(e) { if (signed) e.setAttribute("href", `${CONSOLE}/`); } })
     .on("#mh-edit", {
       element(e) {
         const href = e.getAttribute("data-href");
@@ -335,7 +339,7 @@ function fmtRows(n: number): string {
   return n >= 10_000 ? `${(n / 10_000).toFixed(n >= 1_000_000 ? 0 : 1)} 万` : String(n);
 }
 
-function statsPanel(repos: RepoInfo[], usage: DoUsage | null = null): string {
+function statsPanel(repos: RepoInfo[], usage: DoUsage | null = null, linkBase = ""): string {
   const db = repos.reduce((a, r) => a + (r.db_bytes || 0), 0);
   const r2 = repos.reduce((a, r) => a + (r.r2_bytes || 0), 0);
   const priv = repos.filter((r) => r.priv).length;
@@ -347,7 +351,7 @@ function statsPanel(repos: RepoInfo[], usage: DoUsage | null = null): string {
   const max = top[0] ? top[0].db_bytes + top[0].r2_bytes : 1;
   const topRows = top.map((r) => {
     const n = r.db_bytes + r.r2_bytes;
-    return `<li><a href='/${repoUrl(r.name)}/'>${esc(r.name)}</a><span class='st-mini'><i style='width:${((n / max) * 100).toFixed(1)}%'></i></span><span class='st-num'>${fmtBytes(n)}</span></li>`;
+    return `<li><a href='${linkBase}/${repoUrl(r.name)}/'>${esc(r.name)}</a><span class='st-mini'><i style='width:${((n / max) * 100).toFixed(1)}%'></i></span><span class='st-num'>${fmtBytes(n)}</span></li>`;
   }).join("");
   return `<section class='mio-card st-panel' aria-label='storage'>` +
     `<div class='st-head'><h2>${t("Storage", "存储空间")}<details class='st-help'><summary aria-label='注意事项 / Notes' title='注意事项 / Notes'>?</summary><div class='st-pop' role='note'>` +
@@ -387,7 +391,7 @@ async function indexBody(env: Env, signedIn = false, settings = false): Promise<
     const iso = new Date(r.idle).toISOString();
     rows +=
       `<li data-name='${esc(r.name.toLowerCase())}' data-t='${secs}'>` +
-      `<a class='rl-name' href='/${repoUrl(r.name)}/'>${esc(r.name)}${r.priv ? `<span class='mio-badge rl-priv'>${t("Private", "私有")}</span>` : ""}</a>` +
+      `<a class='rl-name' href='${settings ? `${CONSOLE}/r` : ""}/${repoUrl(r.name)}/'>${esc(r.name)}${r.priv ? `<span class='mio-badge rl-priv'>${t("Private", "私有")}</span>` : ""}</a>` +
       `<p class='rl-desc'>${r.desc ? esc(r.desc) : t("No description", "暂无描述")}</p>` +
       `<div class='rl-meta'>` +
       (r.lang ? `<span class='rl-lang' data-noi18n><i style='background:${langColor(r.lang)}'></i>${esc(r.lang)}</span>` : "") +
@@ -403,7 +407,7 @@ async function indexBody(env: Env, signedIn = false, settings = false): Promise<
       `<button type='button' data-sort='name' aria-pressed='false'>${t("Name", "名称")}</button></div>`
     : "";
   const body = repos.length
-    ? (signedIn ? statsPanel(repos, await doUsage(env)) : "") + `<div class='rl-bar'><span class='rl-count'>${t(`${repos.length} repositories`, `${repos.length} 个仓库`)}</span>${sortBar}</div><ul class='repo-list' id='repo-list'>${rows}</ul>`
+    ? (signedIn ? statsPanel(repos, await doUsage(env), settings ? `${CONSOLE}/r` : "") : "") + `<div class='rl-bar'><span class='rl-count'>${t(`${repos.length} repositories`, `${repos.length} 个仓库`)}</span>${sortBar}</div><ul class='repo-list' id='repo-list'>${rows}</ul>`
     : `<div class='mio-empty'>${t("No public repositories yet. Create one by pushing:", "还没有公开仓库，推送即可创建：")}<br/><code>git push https://&lt;this-host&gt;/myrepo.git main</code></div>`;
   return body;
 }
@@ -653,6 +657,11 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
       }
 
       if (path === "/" || path === "") {
+        // signed in to the console (hint cookie): the one list with public and
+        // private repositories lives at /~mio/ (Access + session checked there)
+        if (ui && (req.method === "GET" || req.method === "HEAD") && hasHint(req) && !req.headers.has("authorization")) {
+          return new Response(null, { status: 302, headers: { location: `${CONSOLE}/`, "cache-control": "no-store" } });
+        }
         if (ui && req.headers.has("authorization")) {
           const p = await principal();
           if (p instanceof Response) return p;
@@ -669,7 +678,12 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
         if (cache) {
           const key = new Request(`${url.origin}/?__index&__ui=${UI_VER}`, { method: "GET" });
           const hit = await cache.match(key);
-          if (hit) return hit;
+          if (hit) {
+            // edge copy only: browsers revalidate, so signing in takes effect at once
+            const out = new Response(hit.body, hit);
+            out.headers.set("cache-control", "no-cache");
+            return out;
+          }
           const res = await indexPage(env);
           const toCache = new Response(res.clone().body, res);
           toCache.headers.set("cache-control", "public, max-age=30");
@@ -725,6 +739,13 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
 
       // mutations read the registry fresh; page views tolerate a short memo
       const info: RepoInfo | null = await repoInfo(env, repo, isReceive || isAdmin);
+
+      // a browser opening a private repository's pages (no git credentials) goes
+      // to the console viewer — Access + console session there — instead of a
+      // Basic-auth prompt; git clients and token requests are untouched
+      if (ui && info?.priv && !isProtocol && !isApi && (req.method === "GET" || req.method === "HEAD") && !req.headers.has("authorization")) {
+        return new Response(null, { status: 302, headers: { location: `${CONSOLE}/r/${repoUrl(repo)}${sub || "/"}${url.search}`, "cache-control": "no-store" } });
+      }
 
       // every repo-scoped request passes through authorize; the default hook
       // waves reads of public repositories straight through
@@ -884,7 +905,7 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
         return new Response(null, { status: 301, headers: { location: u.toString() } });
       }
       const res = await inner(req, env, ctx);
-      return ui ? decorate(res, new URL(req.url)) : res;
+      return ui ? decorate(res, new URL(req.url), req) : res;
     },
   };
 }

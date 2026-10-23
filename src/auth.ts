@@ -177,6 +177,22 @@ export function clearSessionCookie(): string {
   return `${SESSION_COOKIE}=; Path=${SESSION_PATH}; Max-Age=0; HttpOnly; Secure; SameSite=Strict`;
 }
 
+/**
+ * Signed-in hint for the public pages: carries no secret and grants nothing.
+ * It only makes "/" and the top-left logo lead to the console list (/~mio/),
+ * where Access and the real session (Path=/~mio/) are checked as always.
+ */
+export const HINT_COOKIE = "mg_signed";
+export function hintCookie(): string {
+  return `${HINT_COOKIE}=1; Path=/; Max-Age=${SESSION_TTL_S}; HttpOnly; Secure; SameSite=Lax`;
+}
+export function clearHintCookie(): string {
+  return `${HINT_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
+}
+export function hasHint(req: Request): boolean {
+  return new RegExp(`(?:^|;\\s*)${HINT_COOKIE}=1(?:;|$)`).test(req.headers.get("cookie") ?? "");
+}
+
 /** CSRF token bound to the session cookie (synchronizer token, derived — nothing stored). */
 export async function csrfToken(env: Env, passHash: string, session: string): Promise<string> {
   return hmac(await sessionKey(env, passHash), `csrf\0${session}`);
