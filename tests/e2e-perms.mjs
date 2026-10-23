@@ -182,6 +182,8 @@ try {
   check(bl.kind === "blob" && bl.lineCount === 1 && Array.isArray(bl.lines), "blob view: highlighted lines");
   const nf = await fetch(`${BASE}/mio-cli/tree/nope`);
   check(nf.status === 404 && bootOf(await nf.text())?.data["/mio-cli/api/view/tree/nope"]?.body?.kind === "error", "missing path: 404 shell with an error view");
+  const nr = await fetch(`${BASE}/no-such-repo-xyz/`);
+  check(nr.status === 404 && bootOf(await nr.text())?.data["/no-such-repo-xyz/api/view/"]?.body?.kind === "error", "missing repository: 404 SPA shell with an error view (not the old server page)");
   for (const [from, to] of [["/mio-cli/about/", "/mio-cli/"], ["/mio-cli/summary/", "/mio-cli/"], ["/mio-cli/refs/", "/mio-cli/branches/"]]) {
     const ui_mv = await fetch(`${BASE}${from}`, { redirect: "manual" });
     check(ui_mv.status === 301 && ui_mv.headers.get("location") === to, `old tab ${from} -> 301 ${to}`);

@@ -845,6 +845,13 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
       if (!info && !isReceive) {
         if (isApi) return Response.json({ error: `repository not found: ${repo}` }, { status: 404 });
         if (isProtocol) return new Response(`repository not found: ${repo}\n`, { status: 404 });
+        // frontend page of a missing repository: the SPA's own 404 (same chrome as every other page)
+        if (spaOn(env) && (req.method === "GET" || req.method === "HEAD") && isSpaSub(sub) && !req.headers.has("authorization")) {
+          const apiPath = `/${repoUrl(repo)}/api/view${sub === "" ? "/" : sub}${url.search}`;
+          const data = { [apiPath]: { status: 404, body: { kind: "error", error: `no such repository: ${repo}` } } };
+          const shell = await spaShell(req, env, { ...bootBase(env), signed: hasHint(req), console: false, data }, 404);
+          if (shell) return shell;
+        }
         return errorPage(siteBase(env), `no such repository: ${repo}`, 404);
       }
 

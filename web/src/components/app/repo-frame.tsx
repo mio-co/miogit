@@ -81,7 +81,10 @@ export function RepoFrame({ consoleMode }: { consoleMode: boolean }) {
     : null;
   let body: React.ReactNode;
   if (v.kind === 'error' || !c) {
-    body = <ErrorView status={res?.status ?? 404} error={v.kind === 'error' ? v.error : 'error'} back={{ href: `${base}/`, label: t('Back to repository', '返回仓库') }} />;
+    // no meta = the repository itself is missing (or unreachable): back to the list, not into the missing repo
+    const err = v.kind === 'error' ? v.error : ((res?.body as { error?: string } | undefined)?.error ?? 'error');
+    const back = meta ? { href: `${base}/`, label: t('Back to repository', '返回仓库') } : { href: consoleMode ? '/~mio/' : '/', label: t('All repositories', '全部仓库') };
+    body = <ErrorView status={res?.status ?? 404} error={err} back={back} />;
   } else if (v.kind === 'summary') body = <SummaryView v={v} c={c} />;
   else if (v.kind === 'empty') body = <EmptyRepoView v={v} />;
   else if (v.kind === 'tree') body = <TreeView v={v} c={c} h={h} />;
@@ -94,7 +97,7 @@ export function RepoFrame({ consoleMode }: { consoleMode: boolean }) {
   if (document.title !== title) document.title = title;
   return (
     <div className="flex flex-col gap-5">
-      <RepoChrome repo={repo} meta={meta} consoleMode={consoleMode} active={tabOf(splat)} priv={meta?.priv} />
+      {meta && <RepoChrome repo={repo} meta={meta} consoleMode={consoleMode} active={tabOf(splat)} priv={meta?.priv} />}
       <div key={loc.pathname + loc.search} className="mio-page-in min-w-0">
         {body}
       </div>
