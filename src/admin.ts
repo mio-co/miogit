@@ -420,12 +420,13 @@ export function createConsole(deps: ConsoleDeps) {
   /** Entry point for every path under /~mio (and /~mio itself). */
   async function handle(req: Request, env: Env): Promise<Response> {
     const res = await route(req, env);
-    // a stale signed-in hint (session expired or signed out elsewhere) is dropped
-    // as soon as the console sees the browser without a valid session
-    if (!hasHint(req) || (res.headers.get("set-cookie") ?? "").includes("mg_signed=")) return res;
-    if (await validSession(req, env, await adminPasswordHash(env))) return res;
+    if ((res.headers.get("set-cookie") ?? "").includes("mg_signed=")) return res;
+    const valid = !!(await validSession(req, env, await adminPasswordHash(env)));
+    // a session from before the hint existed gets the hint on its next console visit;
+    // a stale hint (session expired or signed out elsewhere) is dropped
+    if (valid === hasHint(req)) return res;
     const out = new Response(res.body, res);
-    out.headers.append("set-cookie", clearHintCookie());
+    out.headers.append("set-cookie", valid ? hintCookie() : clearHintCookie());
     return out;
   }
 
