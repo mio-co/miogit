@@ -20,10 +20,14 @@ export function Legend({ items, className }: { items: string[]; className?: stri
 /** 数据表回退（屏幕阅读器） */
 export function DataFallback({ caption, head, rows }: { caption: string; head: string[]; rows: (string | number)[][] }) {
   return (
-    <table className="sr-only">
-      <caption>{caption}</caption>
-      <thead><tr>{head.map((h) => <th key={h} scope="col">{h}</th>)}</tr></thead>
-      <tbody>{rows.map((r, i) => <tr key={i}>{r.map((c, j) => (j === 0 ? <th key={j} scope="row">{c}</th> : <td key={j}>{c}</td>))}</tr>)}</tbody>
-    </table>
+    /* [MioGit 小改] sr-only 放在外层 div 上：表格盒不吃 overflow:hidden，caption（nowrap）会按全文宽度
+       撑出可滚动区域（手机上整页能横向滚动）；clip-path 只遮视觉不收滚动范围。div 的 overflow:hidden 才真正裁掉。 */
+    <div className="sr-only">
+      <table>
+        <caption>{caption}</caption>
+        <thead><tr>{head.map((h) => <th key={h} scope="col">{h}</th>)}</tr></thead>
+        <tbody>{rows.map((r, i) => <tr key={i}>{r.map((c, j) => (j === 0 ? <th key={j} scope="row">{c}</th> : <td key={j}>{c}</td>))}</tr>)}</tbody>
+      </table>
+    </div>
   );
 }

@@ -240,6 +240,12 @@ html:not(.dark) .md pre { background: var(--cds-surface-1); color: var(--cds-tex
 .md table { width: auto; display: block; overflow-x: auto; border-collapse: collapse; }
 .md th, .md td { padding: 6px 12px; box-shadow: inset 0 0 0 var(--cds-ring-hairline) var(--cds-border); }
 .md th { font-weight: 600; }
+/* 手机：表格本身横向滚动（display:block + overflow-x:auto），单元格里不再逐字折行（「管/理/员」「src/ mod.ts」）；
+   CJK 只在标点/空格处换行，行内 code 不断行。桌面不变。 */
+@media (max-width: 640px) {
+  .md th, .md td { word-break: keep-all; overflow-wrap: normal; }
+  .md th code, .md td code { white-space: nowrap; }
+}
 .md img { max-width: 100%; border-radius: var(--cds-radius); display: inline; }
 .md hr { border: 0; height: var(--cds-ring-hairline); background: var(--cds-border); margin: 24px 0; }
 .md input[type='checkbox'] { margin-right: 0.4em; vertical-align: -0.1em; }

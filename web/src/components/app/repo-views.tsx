@@ -667,7 +667,8 @@ export function RefsView({ v, c }: { v: Extract<View, { kind: 'branches' | 'tags
             {kind === 'branches'
               ? v.items.map((b, i) => (
                   <StaggerItem key={b.name} i={i} className={cn('mio-row flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3', rowCls)}>
-                    <div className="min-w-0 flex-1">
+                    {/* 至少 16rem：手机上放不下时操作按钮换到下一行，而不是把提交信息挤成一窄条 */}
+                    <div className="min-w-[min(100%,16rem)] flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <AppLink href={`${c.base}/tree/?h=${encodeURIComponent(b.name)}`} className="cds-focus inline-flex min-w-0 items-center gap-1.5 rounded-sm font-mono text-[13px] font-medium text-accent-text hover:underline [&_svg]:size-4">
                           <GitBranch /> <span className="truncate">{b.name}</span>
@@ -686,7 +687,7 @@ export function RefsView({ v, c }: { v: Extract<View, { kind: 'branches' | 'tags
                 ))
               : v.items.map((tg, i) => (
                   <StaggerItem key={tg.name} i={i} className={cn('mio-row flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3', rowCls)}>
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-[min(100%,16rem)] flex-1">
                       <AppLink href={`${c.base}/tag/?h=${encodeURIComponent(tg.name)}`} className="cds-focus inline-flex min-w-0 items-center gap-1.5 rounded-sm font-mono text-[13px] font-medium text-accent-text hover:underline [&_svg]:size-4">
                         <TagIcon /> <span className="truncate">{tg.name}</span>
                       </AppLink>
