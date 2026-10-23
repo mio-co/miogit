@@ -234,7 +234,7 @@ try {
   const pvh = await pv.text();
   check(pv.status === 200 && pvh.includes("a.txt"), "signed in: private repo page opens inside the console, no second login");
   check(/<nav class='mio-tabs'>[\s\S]*<a class='mio-tab-set' href='\/~mio\/repos\/permtest'>[\s\S]*<\/nav>/.test(pvh), "console repo page: Settings tab at the end of the tab bar -> /~mio/repos/permtest");
-  check(/<\/h1><span class='mio-badge rl-priv-h'>/.test(pvh), "console repo page: Private badge next to the title");
+  check(/<\/h1><span class='mio-badge mio-badge-accent rl-priv-h'>/.test(pvh), "console repo page: Private badge next to the title");
   check((await consoleGet("/~mio/r/permtest/about/")).headers.get("location") === "/~mio/r/permtest/", "console viewer: old about tab -> 301 to the Code page");
   check(/<div class='gh-bar'><details class='mio-menu mio-ref' data-menu>[\s\S]*?<div class='gh-counts'>/.test(pvh) && !/class='mio-refbar'/.test(pvh) && /href=["']\/~mio\/r\/permtest\/tree\/\?h=adminbranch["']/.test(pvh) && !/<select name='h'/.test(pvh) && !/<details/.test(/<nav class='mio-tabs'>([\s\S]*?)<\/nav>/.exec(pvh)?.[1] ?? "<details"), "branch switcher: first item of the counts row (branches · tags · commits), links, no select/submit, no separate ref bar");
   check(!/class='rl-set'/.test(both), "console list rows no longer carry a settings link");

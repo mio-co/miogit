@@ -428,7 +428,7 @@ async function indexBody(env: Env, signedIn = false, settings = false): Promise<
     const iso = new Date(r.idle).toISOString();
     rows +=
       `<li data-name='${esc(r.name.toLowerCase())}' data-t='${secs}'>` +
-      `<a class='rl-name' href='${settings ? `${CONSOLE}/r` : ""}/${repoUrl(r.name)}/'>${esc(r.name)}${r.priv ? `<span class='mio-badge rl-priv'>${t("Private", "私有")}</span>` : ""}</a>` +
+      `<a class='rl-name' href='${settings ? `${CONSOLE}/r` : ""}/${repoUrl(r.name)}/'>${esc(r.name)}${r.priv ? `<span class='mio-badge mio-badge-accent rl-priv'>${t("Private", "私有")}</span>` : ""}</a>` +
       `<p class='rl-desc'>${r.desc ? esc(r.desc) : t("No description", "暂无描述")}</p>` +
       `<div class='rl-meta'>` +
       (r.lang ? `<span class='rl-lang' data-noi18n><i style='background:${langColor(r.lang)}'></i>${esc(r.lang)}</span>` : "") +

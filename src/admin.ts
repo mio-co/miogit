@@ -389,7 +389,7 @@ export function createConsole(deps: ConsoleDeps) {
 </form>`;
     } else if (section === "visibility") {
       panel = `<form class='rs-panel' method='post' action='${href}'>${csrfIn}<input type='hidden' name='s' value='visibility'/>
-  <div class='rs-panel-h'><h2>${t("Visibility", "可见性")}</h2><p class='mio-note'>${t("Currently", "当前")} <span class='mio-badge'>${priv ? t("Private", "私有") : t("Public", "公开")}</span></p></div>
+  <div class='rs-panel-h'><h2>${t("Visibility", "可见性")}</h2><p class='mio-note'>${t("Currently", "当前")} <span class='mio-badge ${priv ? "mio-badge-accent" : "mio-badge-neutral"}'>${priv ? t("Private", "私有") : t("Public", "公开")}</span></p></div>
   ${alert}
   <label class='mio-check'><input type='checkbox' name='private' value='1'${priv ? " checked" : ""}/><span>${t("Private (requires a token to read)", "私有（需要令牌才能读取）")}</span></label>
   <p class='mio-note rs-note'>${t("Public repositories can be browsed and cloned by anyone. Private ones only open in this console or with an access token.", "公开仓库任何人都能浏览和 clone；私有仓库只能在管理台里打开，或用访问令牌读取。")}</p>
@@ -438,7 +438,7 @@ export function createConsole(deps: ConsoleDeps) {
       .on("link[href]", attr("href"))
       .on("img[src]", attr("src"))
       .on("form[action]", attr("action"))
-      .on(".mio-head h1", { element(e) { if (priv) e.after(`<span class='mio-badge rl-priv-h'>${t("Private", "私有")}</span>`, { html: true }); } })
+      .on(".mio-head h1", { element(e) { if (priv) e.after(`<span class='mio-badge mio-badge-accent rl-priv-h'>${t("Private", "私有")}</span>`, { html: true }); } })
       .on("nav.mio-tabs", { element(e) { e.append(tab, { html: true }); } });
     if (extra) rw = extra(rw);
     const out = rw.transform(res);
