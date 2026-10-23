@@ -579,8 +579,23 @@ export function createConsole(deps: ConsoleDeps) {
 
   /** sync: the repository's "sync with GitHub" switch (default on, src/sync.ts) */
   async function repoInfoJson(env: Env, info: RepoInfo) {
-    const sync = await env.REGISTRY.getByName("registry").syncEnabled(info.name);
-    return { name: info.name, description: info.desc, owner: info.owner, section: info.section, private: !!info.priv, sync };
+    const reg = env.REGISTRY.getByName("registry");
+    const sync = await reg.syncEnabled(info.name);
+    // what the last sync run said about this repository (conflicts are kept unmasked here only)
+    let syncAt: string | null = null;
+    let syncConflicts: string[] = [];
+    let syncLinked = false;
+    try {
+      const st = JSON.parse((await reg.getSetting(`sync_state:${info.name}`)) ?? "null");
+      if (st && typeof st === "object") {
+        syncAt = typeof st.at === "string" ? st.at : null;
+        syncLinked = st.linked === true;
+        syncConflicts = Array.isArray(st.conflicts) ? st.conflicts.filter((x: unknown) => typeof x === "string").slice(0, 20) : [];
+      }
+    } catch {
+      // no state yet
+    }
+    return { name: info.name, description: info.desc, owner: info.owner, section: info.section, private: !!info.priv, sync, syncAt, syncLinked, syncConflicts };
   }
 
   /** the page view JSON of any repository (public or private), read with the console session */

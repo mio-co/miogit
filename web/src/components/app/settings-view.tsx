@@ -7,6 +7,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate, useRevalidator, useSearchParams } from 'react-router';
 import { Globe, SlidersHorizontal, Warning } from '@phosphor-icons/react';
+import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -181,7 +182,25 @@ function SyncRow({ info }: { info: RepoSettings }) {
           '推送到这里会同步到 GitHub 组织 mio-co 的同名仓库（没有就自动创建），在 GitHub 上的推送也会同步回来。只做快进；关掉后两个方向都停止。',
         )}
         control={<Switch checked={on} disabled={busy} onCheckedChange={(v) => void change(v)} aria-label={t('Sync with GitHub', '同步到 GitHub')} />}
-      />
+      >
+        {info.syncAt && (
+          <p className="mt-1 text-[12.5px] leading-[1.125rem] text-text-muted">
+            {t('Last sync run', '上次同步')}: <time dateTime={info.syncAt}>{info.syncAt.replace('T', ' ').replace('Z', ' UTC')}</time>
+            {!info.syncLinked && ` · ${t('not linked', '未关联')}`}
+          </p>
+        )}
+      </SettingRow>
+      {on && info.syncConflicts && info.syncConflicts.length > 0 && (
+        <Alert variant="warning" title={t('Skipped in the last sync run', '上次同步跳过的内容')} className="mt-2">
+          <ul className="list-disc ps-4 [overflow-wrap:anywhere]">
+            {info.syncConflicts.map((c) => (
+              <li key={c} className="font-mono text-[12px]">
+                {c}
+              </li>
+            ))}
+          </ul>
+        </Alert>
+      )}
     </div>
   );
 }

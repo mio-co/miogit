@@ -540,7 +540,7 @@ try {
   commit(sdir, "s.txt", "s1\n", "s1");
   check(git(sdir, "push", "-q", url(ADMIN_TOKEN, "synctest"), "main").code === 0, "admin push creates synctest");
   const d1 = await waitDispatch((d) => d.client_payload?.repo === "synctest");
-  check(d1?.event_type === "miogit-push" && d1.client_payload.origin === "miogit" && d1.client_payload.private === false && d1.client_payload.refs?.[0]?.ref === "refs/heads/main" && d1.auth === `Bearer ${SYNC_PAT}`, "push -> repository_dispatch miogit-push (repo, refs, public, PAT)");
+  check(d1?.event_type === "miogit-push" && d1.client_payload.origin === "miogit" && d1.client_payload.private === false && d1.client_payload.refs?.[0]?.ref === "refs/heads/main" && d1.auth === `Bearer ${SYNC_PAT}` && /^[0-9a-f]{16}$/.test(d1.client_payload.group ?? "") && !d1.client_payload.group.includes("synctest"), "push -> repository_dispatch miogit-push (repo, refs, public, PAT, hashed group)");
   check(git(sdir, "push", "-q", url(ADMIN_TOKEN, "syncpriv"), "main").code === 0, "admin push creates syncpriv");
   await waitDispatch((d) => d.client_payload?.repo === "syncpriv");
   check((await apiPost("/~mio/api/repos/syncpriv", { s: "visibility", private: true })).status === 200, "syncpriv made private in the console");
@@ -612,6 +612,11 @@ try {
   check((await sapi("/repos/ghnew", { method: "POST", body: JSON.stringify({ private: false }) })).status === 200 && git(tmp, "ls-remote", `${BASE}/ghnew.git`).code === 0, "sync API visibility change (public) takes effect");
   check((await sapi("/state/ghnew", { method: "PUT", body: JSON.stringify({ linked: true, refs: { "refs/heads/main": "a".repeat(40) } }) })).status === 200, "sync API stores state");
   check((await (await sapi("/repos")).json()).repos.find((r) => r.name === "ghnew")?.state?.refs?.["refs/heads/main"] === "a".repeat(40), "state comes back in the list");
+  await sapi("/state/syncpriv", { method: "PUT", body: JSON.stringify({ linked: true, at: "2026-10-23T08:00:00Z", conflicts: ["refs/heads/main: diverged (MioGit aaaaaaaaa, GitHub bbbbbbbbb); not forcing either side"] }) });
+  const scs = await (await apiGet("/~mio/api/repos/syncpriv")).json();
+  check(scs.syncLinked === true && scs.syncAt === "2026-10-23T08:00:00Z" && /diverged/.test(scs.syncConflicts?.[0] ?? ""), "console settings show the last sync run and its conflicts (unmasked)");
+  check((await sapi("/report", { method: "PUT", body: JSON.stringify({ mode: "reconcile", conflicts: [] }) })).status === 200, "sync API stores the full run report");
+  check((await sapi("/github/setup", { method: "POST", body: "{}" })).status !== 401, "GitHub setup endpoint reachable with the sync token");
   check((await sapi("/repos/bad..name%2F", { method: "POST", body: "{}" })).status === 400 || (await sapi("/repos/-bad", { method: "POST", body: "{}" })).status === 400, "bad names refused");
 
   console.log("== password change (API) + logout + rate limit");

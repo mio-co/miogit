@@ -34,6 +34,7 @@ const SYNCED_REF = /^refs\/(heads|tags)\//;
 /** GitHub caps webhook payloads at 25 MB */
 const MAX_WEBHOOK_BYTES = 26 * 1024 * 1024;
 const MAX_STATE_BYTES = 256 * 1024;
+const te = new TextEncoder();
 
 export interface SyncPushEvent {
   repo: string;
@@ -54,6 +55,17 @@ function githubApi(env: Env): string {
   return ((env.SYNC_GITHUB_API ?? "").trim() || "https://api.github.com").replace(/\/+$/, "");
 }
 
+/**
+ * The workflow's concurrency / cache key for a repository: not the name (the sync
+ * repository is public, so its UI must not show private repository names) but a
+ * keyed hash of the lower-cased name, the same from both directions.
+ */
+export async function syncGroup(env: Env, name: string): Promise<string> {
+  const key = env.SYNC_WEBHOOK_SECRET || env.SYNC_GIT_TOKEN || "";
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", te.encode(`miogit-sync-group\0${key}\0${name.toLowerCase()}`)));
+  return [...d.slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /** POST /repos/<sync repo>/dispatches. false (logged, never thrown) when not configured or refused. */
 export async function dispatchSync(env: Env, eventType: "miogit-push" | "github-push", payload: Record<string, unknown>): Promise<boolean> {
   const token = env.SYNC_GITHUB_TOKEN;
@@ -68,7 +80,7 @@ export async function dispatchSync(env: Env, eventType: "miogit-push" | "github-
         "content-type": "application/json",
         "user-agent": "miogit-sync",
       },
-      body: JSON.stringify({ event_type: eventType, client_payload: payload }),
+      body: JSON.stringify({ event_type: eventType, client_payload: { ...payload, group: await syncGroup(env, String(payload.repo ?? "")) } }),
     });
     if (!res.ok) console.log(`[sync] dispatch ${eventType} ${String(payload.repo)}: HTTP ${res.status}`);
     return res.ok;
@@ -101,8 +113,6 @@ export async function onPushSync(event: SyncPushEvent, env: Env): Promise<void> 
 }
 
 // ---- webhook -------------------------------------------------------------------
-
-const te = new TextEncoder();
 
 function hexToBytes(h: string): Uint8Array | null {
   if (!/^[0-9a-f]*$/i.test(h) || h.length % 2) return null;
@@ -311,6 +321,14 @@ async function api(req: Request, env: Env, sub: string, deps: SyncDeps): Promise
       info = (await reg.get(name)) ?? info;
     }
     return json({ name: info.name, private: !!info.priv, created: false });
+  }
+
+  // the last run's full (unmasked) report; the public workflow log masks private names
+  if (sub === "/report" && req.method === "PUT") {
+    const b = await readJson(req, MAX_STATE_BYTES);
+    if (!b) return json({ error: "bad JSON" }, 400);
+    await reg.setSetting(`sync_report:${b.mode === "reconcile" ? "reconcile" : "event"}`, JSON.stringify(b));
+    return json({ ok: true });
   }
 
   const st = /^\/state\/([^/]+)$/.exec(sub);

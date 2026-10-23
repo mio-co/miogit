@@ -113,6 +113,14 @@ async function setup(env: Env, origin: string, body: Record<string, unknown>): P
   } else {
     out.created = false;
   }
+  // visibility of the sync repository (public: free Actions minutes; its logs mask private names)
+  if (typeof body.private === "boolean") {
+    r = await gh(env, "GET", `/repos/${repo}`);
+    if (r.status === 200 && r.data?.private !== body.private) {
+      const v = await gh(env, "PATCH", `/repos/${repo}`, { private: body.private });
+      out.visibility = v.status === 200 ? (body.private ? "private" : "public") : msg(v);
+    } else out.visibility = r.status === 200 ? "unchanged" : msg(r);
+  }
   // 2. files (path -> base64), workflow last so the first run sees the script
   const files = (body.files && typeof body.files === "object" ? body.files : {}) as Record<string, string>;
   const order = Object.keys(files).sort((a, b) => Number(a.startsWith(".github/")) - Number(b.startsWith(".github/")) || a.localeCompare(b));
