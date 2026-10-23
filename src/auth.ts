@@ -54,6 +54,9 @@ export async function secretsEqual(a: string, b: string): Promise<boolean> {
 
 // ---- git tokens ----------------------------------------------------------------
 
+/** principal id of the SYNC_GIT_TOKEN secret (the GitHub sync workflow) */
+export const SYNC_PRINCIPAL_ID = "sync";
+
 /** env tokens (GIT_TOKEN + comma-separated GIT_TOKENS): always admin. */
 export function envTokens(env: Env): string[] {
   return [env.GIT_TOKEN ?? "", ...(env.GIT_TOKENS ?? "").split(",")].map((t) => t.trim()).filter(Boolean);
@@ -81,6 +84,9 @@ export async function resolveToken(env: Env, pass: string): Promise<Principal | 
   let envIdx = -1;
   for (let i = 0; i < list.length; i++) if (bytesEqual(pd, await sha256(list[i])) && envIdx === -1) envIdx = i;
   if (envIdx !== -1) return { role: "admin", id: `env:${envIdx}`, name: envIdx === 0 && env.GIT_TOKEN ? "GIT_TOKEN" : `GIT_TOKENS[${envIdx}]` };
+  // the GitHub sync workflow's token: admin (it creates repositories), with its
+  // own id so its pushes are recognised and not echoed back to GitHub
+  if (env.SYNC_GIT_TOKEN && bytesEqual(pd, await sha256(env.SYNC_GIT_TOKEN))) return { role: "admin", id: SYNC_PRINCIPAL_ID, name: "sync" };
   if (!pass.startsWith("mgt_")) return null; // table tokens always carry the prefix
   const hex = [...pd].map((b) => b.toString(16).padStart(2, "0")).join("");
   const row = await env.REGISTRY.getByName("registry").authToken(hex);

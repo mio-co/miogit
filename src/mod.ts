@@ -21,6 +21,7 @@ import { envTokens, hasHint, resolveToken, secretsEqual as secretsEqualImpl } fr
 import { roleAllows, type Principal } from "./policy";
 import { createConsole, CONSOLE } from "./admin";
 import { ICON_PENCIL, ICON_REPO, ICON_SIGN_IN, ICON_USER_CIRCLE } from "./ui/icons";
+import { handleSync, SYNC_PREFIX } from "./sync";
 import { spaOn, isSpaSub, spaShell, bootBase, repoJson, storageJson } from "./spa";
 
 export { RepoCell } from "./repo";
@@ -73,6 +74,8 @@ export interface PushEvent {
   updates: RefUpdate[];
   /** unix millis of the newest committer date after the push */
   commitTime: number;
+  /** the token that pushed (null when a custom authorize hook admitted it without one) */
+  principal?: Principal | null;
 }
 
 export interface DurableGitOptions<E extends Env = Env> {
@@ -629,6 +632,15 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
   const repoRoute = new URLPattern({
     pathname: namespaced ? "/:owner/:name{.git}?{/*}?" : "/:name{.git}?{/*}?",
   });
+  const invalidateRepo = (repo: string, origin?: string) => {
+    infoMemo.delete(repo);
+    // best effort: drop this colo's cached front page so a deleted repo leaves the list now
+    const cache = origin ? pageCache() : null;
+    return Promise.all([
+      cache?.delete(new Request(`${origin}/?__index&__ui=${UI_VER}`, { method: "GET" })).catch(() => false),
+      cache?.delete(new Request(`${origin}/?__spa_repos&__ui=${UI_VER}`, { method: "GET" })).catch(() => false),
+    ]);
+  };
   const console_ = createConsole({
     movedTab,
     siteBase,
@@ -640,15 +652,7 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
     repoJson,
     storageJson,
     doUsage,
-    invalidate: (repo, origin) => {
-      infoMemo.delete(repo);
-      // best effort: drop this colo's cached front page so a deleted repo leaves the list now
-      const cache = origin ? pageCache() : null;
-      return Promise.all([
-        cache?.delete(new Request(`${origin}/?__index&__ui=${UI_VER}`, { method: "GET" })).catch(() => false),
-        cache?.delete(new Request(`${origin}/?__spa_repos&__ui=${UI_VER}`, { method: "GET" })).catch(() => false),
-      ]);
-    },
+    invalidate: invalidateRepo,
   });
   const inner = async (req: Request, env: E, ctx: ExecutionContext): Promise<Response> => {
       const url = new URL(req.url);
@@ -664,6 +668,8 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
         return new Response(null, { status: 301, headers: { location: u.toString() } });
       }
       if (ui && (path === CONSOLE || path.startsWith(`${CONSOLE}/`))) return console_.handle(req, env);
+      // GitHub two-way sync: org webhook + the sync workflow's API (outside Access; each endpoint authenticates itself)
+      if (path === SYNC_PREFIX || path.startsWith(`${SYNC_PREFIX}/`)) return handleSync(req, env, ctx, { invalidate: invalidateRepo });
       if (!ui && path.startsWith("/~")) return new Response("not found\n", { status: 404 });
       // legacy entry points: no unprotected sign-in outside /~mio/
       if (ui && (path === "/login" || path === "/logout")) {
@@ -959,7 +965,7 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
           // registry deferred
         }
         if (options.onPush) {
-          const event: PushEvent = { repo, updates: parseRefUpdates(res), commitTime: idle };
+          const event: PushEvent = { repo, updates: parseRefUpdates(res), commitTime: idle, principal: who ?? null };
           ctx.waitUntil(
             Promise.resolve(options.onPush(event, env)).catch((err) => {
               console.log(`[onPush ${repo}] hook failed: ${err instanceof Error ? err.message : String(err)}`);

@@ -45,12 +45,18 @@
     "ADMIN_USER": "mio",
     // Cloudflare Access application protecting miogit.300031.xyz/~mio/ (JWT re-verified in the Worker)
     "ACCESS_TEAM_DOMAIN": "sakune.cloudflareaccess.com",
-    "ACCESS_AUD": "f90993d75929ac959c7490b9ab4e78817613bb17e7e42cfe72e205b4348f342a"
+    "ACCESS_AUD": "f90993d75929ac959c7490b9ab4e78817613bb17e7e42cfe72e205b4348f342a",
+    // GitHub two-way sync (src/sync.ts, sync/github/): the repository holding the workflow
+    "SYNC_GITHUB_REPO": "mio-co/miogit-sync"
   }
   // Secrets (wrangler secret put …; .dev.vars locally):
   //   GIT_TOKEN            admin git token (the original push password)
   //   ADMIN_PASSWORD_HASH  console password, "pbkdf2-sha256$100000$<salt>$<hash>"
   //                        (node scripts/hash-password.mjs prints one)
+  //   SYNC_GITHUB_TOKEN    GitHub fine-grained PAT for mio-co (sync dispatch + setup)
+  //   SYNC_GIT_TOKEN       MioGit token of the sync workflow (admin, not echoed)
+  //   SYNC_WEBHOOK_SECRET  HMAC secret of the mio-co organisation webhook
+  //   (all optional: without them GitHub sync stays quietly off)
   // Per-assistant git tokens are created in the console (/~mio/tokens) and
   // stored as SHA-256 hashes in the Registry Durable Object.
 }

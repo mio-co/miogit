@@ -1,8 +1,8 @@
-// Deploy entry for the stock dgit Worker: default options (token auth, no
-// push hook). To build your own, `import { createDurableGit } from
-// "durable-git"` in your Worker and pass authorize/onPush — see the README.
+// Deploy entry for MioGit: default token auth, plus the GitHub two-way sync
+// push hook (src/sync.ts; quietly off until its secrets are set).
 import { createDurableGit } from "./mod";
+import { onPushSync } from "./sync";
 
 export { RepoCell, Registry } from "./mod";
 
-export default createDurableGit();
+export default createDurableGit({ onPush: onPushSync });

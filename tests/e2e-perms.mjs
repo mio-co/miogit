@@ -12,7 +12,8 @@ import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateKeyPairSync, createSign, randomBytes, webcrypto } from "node:crypto";
+import { generateKeyPairSync, createSign, createHmac, randomBytes, webcrypto } from "node:crypto";
+import { createServer } from "node:http";
 
 const PORT = 8790 + Math.floor(Math.random() * 100);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -47,8 +48,32 @@ async function hashPassword(pw) {
   return `pbkdf2-sha256$100000$${b64u(salt)}$${b64u(bits)}`;
 }
 
+// ---- GitHub API stand-in (records repository_dispatch calls from the sync hook) ----
+const SYNC_PAT = "ghp_test_" + randomBytes(12).toString("hex");
+const SYNC_HOOK_SECRET = randomBytes(20).toString("hex");
+const SYNC_TOKEN = "mgt_sync_" + randomBytes(18).toString("base64url");
+const dispatches = [];
+const ghStub = createServer((req, res) => {
+  let body = "";
+  req.on("data", (d) => (body += d));
+  req.on("end", () => {
+    if (req.method === "POST" && req.url === "/repos/mio-co/miogit-sync/dispatches") {
+      let j = null;
+      try { j = JSON.parse(body); } catch {}
+      dispatches.push({ auth: req.headers.authorization, ...j });
+      res.writeHead(204).end();
+    } else res.writeHead(404).end();
+  });
+});
+await new Promise((r) => ghStub.listen(0, "127.0.0.1", r));
+const GH_STUB = `http://127.0.0.1:${ghStub.address().port}`;
+
 // ---- server -------------------------------------------------------------------
 const vars = {
+  SYNC_GITHUB_TOKEN: SYNC_PAT,
+  SYNC_WEBHOOK_SECRET: SYNC_HOOK_SECRET,
+  SYNC_GIT_TOKEN: SYNC_TOKEN,
+  SYNC_GITHUB_API: GH_STUB,
   GIT_TOKEN: ADMIN_TOKEN,
   ADMIN_PASSWORD_HASH: await hashPassword(CONSOLE_PASS),
   ACCESS_TEAM_DOMAIN: TEAM,
@@ -64,7 +89,7 @@ let serverLog = "";
 server.stdout.on("data", (d) => (serverLog += d));
 server.stderr.on("data", (d) => (serverLog += d));
 // kill the whole process group (npx -> wrangler -> workerd), or workerd outlives the test
-const cleanup = () => { try { process.kill(-server.pid, "SIGKILL"); } catch {} };
+const cleanup = () => { try { process.kill(-server.pid, "SIGKILL"); } catch {} try { ghStub.close(); } catch {} };
 process.on("exit", cleanup);
 
 for (let i = 0; ; i++) {
@@ -500,6 +525,94 @@ try {
   check((await consoleGet("/~mio/repos/deltest")).status === 404, "settings for the deleted repo 404");
   check(git(tmp, "clone", "-q", `${BASE}/mio-cli.git`, join(tmp, "c-cli")).code === 0 && git(tmp, "ls-remote", url(ADMIN_TOKEN, "permtest")).code === 0, "other repositories unaffected");
   check(git(src, "push", "-q", url(ADMIN_TOKEN, "deltest"), "main").code === 0 && git(tmp, "clone", "-q", `${BASE}/deltest.git`, join(tmp, "c-del2")).code === 0, "the name can be re-created by an admin push afterwards");
+
+  console.log("== GitHub two-way sync (hook, webhook, workflow API)");
+  const waitDispatch = async (pred, ms = 4000) => {
+    for (let t = 0; t < ms; t += 100) {
+      const hit = dispatches.find(pred);
+      if (hit) return hit;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return null;
+  };
+  const sdir = join(tmp, "syncsrc");
+  git(tmp, "init", "-q", sdir);
+  commit(sdir, "s.txt", "s1\n", "s1");
+  check(git(sdir, "push", "-q", url(ADMIN_TOKEN, "synctest"), "main").code === 0, "admin push creates synctest");
+  const d1 = await waitDispatch((d) => d.client_payload?.repo === "synctest");
+  check(d1?.event_type === "miogit-push" && d1.client_payload.origin === "miogit" && d1.client_payload.private === false && d1.client_payload.refs?.[0]?.ref === "refs/heads/main" && d1.auth === `Bearer ${SYNC_PAT}`, "push -> repository_dispatch miogit-push (repo, refs, public, PAT)");
+  check(git(sdir, "push", "-q", url(ADMIN_TOKEN, "syncpriv"), "main").code === 0, "admin push creates syncpriv");
+  await waitDispatch((d) => d.client_payload?.repo === "syncpriv");
+  check((await apiPost("/~mio/api/repos/syncpriv", { s: "visibility", private: true })).status === 200, "syncpriv made private in the console");
+  commit(sdir, "s.txt", "s2\n", "s2");
+  dispatches.length = 0;
+  check(git(sdir, "push", "-q", url(ADMIN_TOKEN, "syncpriv"), "main").code === 0, "push to private syncpriv");
+  const dp = await waitDispatch((d) => d.client_payload?.repo === "syncpriv");
+  check(dp?.client_payload?.private === true, "private repository: dispatch says private (GitHub copy will be private)");
+
+  dispatches.length = 0;
+  commit(sdir, "s.txt", "s3\n", "s3");
+  check(git(sdir, "push", "-q", url(SYNC_TOKEN, "synctest"), "main").code === 0, "sync token can push (admin)");
+  check((await waitDispatch((d) => d.client_payload?.repo === "synctest", 2000)) === null, "a push by the sync token is not dispatched (no echo)");
+
+  const syncSg = await (await apiGet("/~mio/api/repos/synctest")).json();
+  check(syncSg.sync === true, "settings API: sync on by default");
+  check((await apiPost("/~mio/api/repos/synctest", { s: "sync", sync: "nope" })).status === 400, "sync switch needs a boolean");
+  const soff = await apiPost("/~mio/api/repos/synctest", { s: "sync", sync: false });
+  const soffb = await soff.json();
+  check(soff.status === 200 && soffb.sync === false && soffb.description === syncSg.description && soffb.private === syncSg.private, "sync switched off (nothing else changed)");
+  commit(sdir, "s.txt", "s4\n", "s4");
+  check(git(sdir, "push", "-q", url(ADMIN_TOKEN, "synctest"), "main").code === 0, "push with sync off");
+  check((await waitDispatch((d) => d.client_payload?.repo === "synctest", 2000)) === null, "sync off: push not dispatched");
+
+  // webhook
+  const sign = (body, secret = SYNC_HOOK_SECRET) => "sha256=" + createHmac("sha256", secret).update(body).digest("hex");
+  const hook = (event, payload, sig) => {
+    const body = JSON.stringify(payload);
+    return fetch(`${BASE}/~sync/github`, { method: "POST", headers: { "content-type": "application/json", "x-github-event": event, ...(sig === null ? {} : { "x-hub-signature-256": sig ?? sign(body) }) }, body });
+  };
+  const synHead = (await (await fetch(`${BASE}/synctest/api/refs`)).json()).refs.find((r) => r.name === "refs/heads/main").target;
+  const pushEv = (repo, after, ref = "refs/heads/main") => ({ ref, before: "0".repeat(40), after, repository: { name: repo, full_name: `mio-co/${repo}`, private: false } });
+  check((await hook("push", pushEv("synctest", synHead), null)).status === 401, "webhook without signature -> 401");
+  check((await hook("push", pushEv("synctest", synHead), sign("other body"))).status === 401, "webhook with a wrong signature -> 401");
+  check((await hook("push", pushEv("synctest", synHead), sign(JSON.stringify(pushEv("synctest", synHead)), "wrong-secret"))).status === 401, "webhook signed with another secret -> 401");
+  check((await fetch(`${BASE}/~sync/github`)).status === 405, "webhook GET -> 405");
+  check((await hook("ping", { zen: "x" })).status === 200, "webhook ping (signed) -> 200");
+  check((await apiPost("/~mio/api/repos/synctest", { s: "sync", sync: true })).status === 200, "sync switched back on");
+  dispatches.length = 0;
+  const same = await hook("push", pushEv("SyncTest", synHead));
+  check(same.status === 202 && /already in sync/.test(await same.text()), "GitHub push MioGit already has (echo, case-insensitive name) -> skipped");
+  const newer = "1".repeat(40);
+  const nw = await hook("push", pushEv("synctest", newer));
+  check(nw.status === 202, "GitHub push with a new commit -> 202");
+  const sy_dg = await waitDispatch((d) => d.event_type === "github-push");
+  check(sy_dg?.client_payload?.repo === "synctest" && sy_dg.client_payload.miogit === "synctest" && sy_dg.client_payload.refs?.[0]?.new === newer, "-> repository_dispatch github-push");
+  check((await apiPost("/~mio/api/repos/synctest", { s: "sync", sync: false })).status === 200, "sync off again");
+  dispatches.length = 0;
+  await hook("push", pushEv("synctest", "2".repeat(40)));
+  check((await waitDispatch(() => true, 1500)) === null, "sync off: GitHub push not dispatched");
+  await apiPost("/~mio/api/repos/synctest", { s: "sync", sync: true });
+  await hook("push", pushEv("miogit-sync", "3".repeat(40)));
+  await hook("repository", { action: "created", repository: { name: "brand-new", full_name: "mio-co/brand-new", private: true } });
+  const sy_dc = await waitDispatch((d) => d.client_payload?.repo === "brand-new");
+  check(sy_dc?.client_payload?.action === "created" && sy_dc.client_payload.private === true && sy_dc.client_payload.miogit === null, "repository created on GitHub -> dispatch (private, not on MioGit yet)");
+  check(!dispatches.some((d) => d.client_payload?.repo === "miogit-sync"), "the sync repository itself is never synced");
+
+  // workflow API
+  const sapi = (path, init = {}, tok = SYNC_TOKEN) => fetch(`${BASE}/~sync/api${path}`, { ...init, headers: { ...(tok ? basic(tok) : {}), "content-type": "application/json", ...(init.headers ?? {}) } });
+  check((await sapi("/repos", {}, null)).status === 401, "sync API without credentials -> 401");
+  check((await sapi("/repos", {}, ADMIN_TOKEN)).status === 401, "sync API refuses the ordinary admin token");
+  const sl = await (await sapi("/repos")).json();
+  const slp = sl.repos?.find((r) => r.name === "syncpriv");
+  check(slp?.private === true && slp.sync === true && sl.repos.find((r) => r.name === "synctest")?.sync === true, "sync API lists every repository with private + sync flags");
+  const cr = await sapi("/repos/ghnew", { method: "POST", body: JSON.stringify({ create: true, private: true, description: "from GitHub" }) });
+  check(cr.status === 200 && (await cr.json()).created === true, "sync API creates a repository ahead of its first push (private)");
+  check(!(await (await fetch(`${BASE}/api/repos`)).json()).repos.some((r) => r.name === "ghnew"), "it is private from the start (not in the anonymous list)");
+  check(git(sdir, "push", "-q", url(SYNC_TOKEN, "ghnew"), "main").code === 0 && git(tmp, "ls-remote", `${BASE}/ghnew.git`).code !== 0, "sync token fills it; anonymous ls-remote refused");
+  check((await sapi("/repos/ghnew", { method: "POST", body: JSON.stringify({ private: false }) })).status === 200 && git(tmp, "ls-remote", `${BASE}/ghnew.git`).code === 0, "sync API visibility change (public) takes effect");
+  check((await sapi("/state/ghnew", { method: "PUT", body: JSON.stringify({ linked: true, refs: { "refs/heads/main": "a".repeat(40) } }) })).status === 200, "sync API stores state");
+  check((await (await sapi("/repos")).json()).repos.find((r) => r.name === "ghnew")?.state?.refs?.["refs/heads/main"] === "a".repeat(40), "state comes back in the list");
+  check((await sapi("/repos/bad..name%2F", { method: "POST", body: "{}" })).status === 400 || (await sapi("/repos/-bad", { method: "POST", body: "{}" })).status === 400, "bad names refused");
 
   console.log("== password change (API) + logout + rate limit");
   check((await apiPost("/~mio/api/password", { current: CONSOLE_PASS, next: "short", confirm: "short" })).status === 400, "short new password refused");

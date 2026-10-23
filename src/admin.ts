@@ -577,8 +577,10 @@ export function createConsole(deps: ConsoleDeps) {
     return { repos: repos.map((r) => deps.repoJson(r, false)) };
   }
 
-  function repoInfoJson(info: RepoInfo) {
-    return { name: info.name, description: info.desc, owner: info.owner, section: info.section, private: !!info.priv };
+  /** sync: the repository's "sync with GitHub" switch (default on, src/sync.ts) */
+  async function repoInfoJson(env: Env, info: RepoInfo) {
+    const sync = await env.REGISTRY.getByName("registry").syncEnabled(info.name);
+    return { name: info.name, description: info.desc, owner: info.owner, section: info.section, private: !!info.priv, sync };
   }
 
   /** the page view JSON of any repository (public or private), read with the console session */
@@ -631,7 +633,7 @@ export function createConsole(deps: ConsoleDeps) {
       const name = decodeRepo(rs[1]);
       const info = name ? await env.REGISTRY.getByName("registry").get(name) : null;
       if (!info) return null;
-      return boot({ [`${CONSOLE}/api/repos/${repoUrl(info.name)}`]: { status: 200, body: repoInfoJson(info) } });
+      return boot({ [`${CONSOLE}/api/repos/${repoUrl(info.name)}`]: { status: 200, body: await repoInfoJson(env, info) } });
     }
     return null;
   }
@@ -760,8 +762,14 @@ export function createConsole(deps: ConsoleDeps) {
       const name = decodeRepo(rs[1]);
       const info = name ? await registry.get(name) : null;
       if (!info) return jsonRes({ error: "no such repository" }, 404);
-      if (req.method === "GET") return jsonRes(repoInfoJson(info));
+      if (req.method === "GET") return jsonRes(await repoInfoJson(env, info));
       const b = await readBody();
+      // the "sync with GitHub" switch saves on its own (no other field changes)
+      if (str(b.s) === "sync") {
+        if (typeof b.sync !== "boolean") return jsonRes({ error: "sync must be true or false" }, 400);
+        await registry.setSyncEnabled(info.name, b.sync);
+        return jsonRes(await repoInfoJson(env, info));
+      }
       const part = str(b.s);
       const general = part !== "visibility";
       const visibility = part !== "general";
@@ -783,7 +791,7 @@ export function createConsole(deps: ConsoleDeps) {
       await registry.setConfig(info.name, { desc: cfg.description, owner: cfg.owner, section: cfg.section, priv: cfg.private }, idle, res.headers.get("x-main-lang") ?? undefined);
       deps.invalidate(info.name, url.origin);
       const fresh = await registry.get(info.name);
-      return jsonRes(repoInfoJson(fresh ?? info));
+      return jsonRes(await repoInfoJson(env, fresh ?? info));
     }
 
     return jsonRes({ error: "not found" }, 404);

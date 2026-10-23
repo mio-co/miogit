@@ -2,13 +2,16 @@
 // Layout from the MioUI SettingsPageSidenav block (220px section nav + one panel card,
 // nav becomes a horizontal pill row on narrow screens); sections are links (?s=) instead of
 // local state so every section has its own URL, as before. Fields: MioUI Field / Label /
-// Input / Textarea / Checkbox / Button / Badge / Alert; result via toast.
+// Input / Textarea / Checkbox / Button / Badge / Alert; result via toast. The "sync with GitHub"
+// switch (MioUI SettingRow + Switch) sits under the general form and saves on its own.
 import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate, useRevalidator, useSearchParams } from 'react-router';
 import { Globe, SlidersHorizontal, Warning } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
+import { SettingRow } from '@/components/ui/setting-row';
+import { Switch } from '@/components/ui/switch';
 import { Field, HelperText, Label } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -141,7 +144,45 @@ function General({ info }: { info: RepoSettings }) {
           {t('Save', '保存')}
         </Button>
       </div>
+      <SyncRow info={info} />
     </form>
+  );
+}
+
+/** "Sync with GitHub" (default on): saved immediately, independent of the form above. */
+function SyncRow({ info }: { info: RepoSettings }) {
+  const { t } = useI18n();
+  const { session } = useSession();
+  const rv = useRevalidator();
+  const [on, setOn] = useState(info.sync !== false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setOn(info.sync !== false), [info]);
+  const change = async (next: boolean) => {
+    if (!session || busy) return;
+    setOn(next);
+    setBusy(true);
+    const r = await post<{ error?: string; sync?: boolean }>(`/~mio/api/repos/${repoPath(info.name)}`, { s: 'sync', sync: next }, session.csrf);
+    setBusy(false);
+    if (r.status === 200) {
+      invalidate();
+      toast.success(next ? t('GitHub sync is on.', '已开启 GitHub 同步。') : t('GitHub sync is off.', '已关闭 GitHub 同步。'));
+      rv.revalidate();
+    } else {
+      setOn(!next);
+      toast.error(r.body.error || t('Something went wrong.', '出错了，请稍后再试。'));
+    }
+  };
+  return (
+    <div className="mt-2 border-t border-hairline pt-2">
+      <SettingRow
+        title={t('Sync with GitHub', '同步到 GitHub')}
+        description={t(
+          'Pushes here are mirrored to the repository of the same name in the mio-co organisation on GitHub (created if missing), and pushes there come back here. Fast-forwards only; off stops both directions.',
+          '推送到这里会同步到 GitHub 组织 mio-co 的同名仓库（没有就自动创建），在 GitHub 上的推送也会同步回来。只做快进；关掉后两个方向都停止。',
+        )}
+        control={<Switch checked={on} disabled={busy} onCheckedChange={(v) => void change(v)} aria-label={t('Sync with GitHub', '同步到 GitHub')} />}
+      />
+    </div>
   );
 }
 

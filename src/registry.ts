@@ -168,6 +168,55 @@ export class Registry extends DurableObject<Env> {
       .toArray();
   }
 
+  /**
+   * Create an empty repository row ahead of its first push (GitHub sync creates
+   * a repository with its visibility already set, so a private repository is
+   * never public for a moment). No-op when the name exists; returns the row.
+   */
+  ensure(name: string, priv: boolean, desc = ""): RepoInfo {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO repos (name, desc, priv, idle, ver) VALUES (?, ?, ?, ?, ?) ON CONFLICT(name) DO NOTHING",
+      name,
+      desc.slice(0, 500),
+      priv ? 1 : 0,
+      Date.now(),
+      Date.now()
+    );
+    return this.get(name)!;
+  }
+
+  // ---- GitHub sync ----------------------------------------------------------
+  // Kept in the settings table (no schema change): "sync_off:<repo>" = "1" turns
+  // sync off for one repository (default on); "sync_state:<repo>" is the JSON the
+  // sync workflow stores after each run (last synced sha per ref, visibility).
+
+  syncEnabled(name: string): boolean {
+    return this.getSetting(`sync_off:${name}`) !== "1";
+  }
+
+  setSyncEnabled(name: string, on: boolean): void {
+    if (on) this.ctx.storage.sql.exec("DELETE FROM settings WHERE key = ?", `sync_off:${name}`);
+    else this.setSetting(`sync_off:${name}`, "1");
+  }
+
+  /** every repository with its sync flag and stored state (one call for the workflow) */
+  syncOverview(): { name: string; priv: number; desc: string; sync: boolean; state: string | null }[] {
+    const off = new Set(
+      this.ctx.storage.sql.exec<{ key: string }>("SELECT key FROM settings WHERE key >= 'sync_off:' AND key < 'sync_off;'").toArray().map((r) => r.key.slice(9))
+    );
+    const states = new Map(
+      this.ctx.storage.sql
+        .exec<{ key: string; value: string }>("SELECT key, value FROM settings WHERE key >= 'sync_state:' AND key < 'sync_state;'")
+        .toArray()
+        .map((r) => [r.key.slice(11), r.value] as [string, string])
+    );
+    const repos = this.ctx.storage.sql.exec<{ name: string; priv: number; desc: string }>("SELECT name, priv, desc FROM repos ORDER BY name LIMIT 5000").toArray();
+    const out = repos.map((r) => ({ ...r, sync: !off.has(r.name), state: states.get(r.name) ?? null }));
+    // states of repositories that no longer exist here (deleted on MioGit: the workflow must not re-create them)
+    for (const [name, state] of states) if (!repos.some((r) => r.name === name)) out.push({ name, priv: -1, desc: "", sync: !off.has(name), state });
+    return out;
+  }
+
   // ---- access tokens -------------------------------------------------------
 
   /**
@@ -240,6 +289,10 @@ export class Registry extends DurableObject<Env> {
       key,
       value
     );
+  }
+
+  deleteSetting(key: string): void {
+    this.ctx.storage.sql.exec("DELETE FROM settings WHERE key = ?", key);
   }
 
   /** ms until this IP may try again (0 = allowed). Shared by every isolate, unlike an in-memory map. */

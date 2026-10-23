@@ -48,6 +48,17 @@ export interface Env {
   ASSETS?: Fetcher;
   /** "0" switches the React frontend off (server-rendered pages again) without a redeploy of code */
   SPA?: string;
+  /** GitHub two-way sync (src/sync.ts). All optional: without them sync stays quietly off. */
+  /** fine-grained GitHub PAT (secret): repository_dispatch to the sync repository */
+  SYNC_GITHUB_TOKEN?: string;
+  /** HMAC secret of the GitHub organisation webhook (secret) */
+  SYNC_WEBHOOK_SECRET?: string;
+  /** MioGit git token of the sync workflow (secret): admin, its pushes are not sent back to GitHub */
+  SYNC_GIT_TOKEN?: string;
+  /** "owner/name" of the repository holding the sync workflow (default mio-co/miogit-sync) */
+  SYNC_GITHUB_REPO?: string;
+  /** GitHub API base (tests point it at a local stub); default https://api.github.com */
+  SYNC_GITHUB_API?: string;
   SITE_NAME?: string;
   SITE_DESC?: string;
   SITE_OWNER?: string;
