@@ -634,6 +634,7 @@ ul.repo-list li:hover{background:var(--cds-fill-ghost-hover)}
 .mio-ref .mio-menu-pop > a[aria-checked=false] svg{visibility:hidden}
 .mio-ref .mio-menu-pop > a[aria-checked=true] svg{color:var(--cds-accent-text)}
 @media (pointer:coarse){.mio-menu-pop :is(a,button[role=menuitem]){min-height:44px}}
+@media (max-width:640px){.mio-acct .mio-menu-pop{position:fixed;top:calc(var(--site-header) + 4px);left:auto;right:12px;width:min(260px,calc(100vw - 24px));max-width:none}}
 @media (max-width:420px){.mio-acct-btn{padding:0 6px}.mio-acct-l{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}}
 
 /* ========== 手机端 ========== */

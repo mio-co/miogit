@@ -34,7 +34,7 @@ import {
   verifyPassword,
 } from "./auth";
 import { isRole, type Role } from "./policy";
-import { ICON_COPY, ICON_PENCIL, ICON_X, ICON_BOOKS, ICON_CARET_DOWN, ICON_GEAR_SIX, ICON_GLOBE, ICON_KEY, ICON_LOCK_KEY, ICON_SIGN_OUT, ICON_SLIDERS, ICON_USER_CIRCLE, ICON_WARNING } from "./ui/icons";
+import { ICON_COPY, ICON_PENCIL, ICON_X, ICON_CARET_DOWN, ICON_GEAR_SIX, ICON_GLOBE, ICON_KEY, ICON_LOCK_KEY, ICON_SIGN_OUT, ICON_SLIDERS, ICON_USER_CIRCLE, ICON_WARNING } from "./ui/icons";
 
 export const CONSOLE = "/~mio";
 
@@ -198,7 +198,6 @@ export function createConsole(deps: ConsoleDeps) {
       `<div class='mio-menu-pop' role='menu'>` +
       `<div class='mio-menu-h'>${t("Signed in as", "已登录：")} <b data-noi18n>${user}</b></div>` +
       `<div class='mio-menu-sep' role='separator'></div>` +
-      `<a role='menuitem' href='${CONSOLE}/'>${ICON_BOOKS}${t("Repositories", "仓库")}</a>` +
       `<a role='menuitem' href='${CONSOLE}/tokens${nq}'>${ICON_KEY}${t("Access tokens", "访问令牌")}</a>` +
       `<a role='menuitem' href='${CONSOLE}/password${nq}'>${ICON_LOCK_KEY}${t("Change password", "修改密码")}</a>` +
       `<div class='mio-menu-sep' role='separator'></div>` +
