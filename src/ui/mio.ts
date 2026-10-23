@@ -219,6 +219,14 @@ a.mio-btn{display:inline-flex;align-items:center;height:var(--cds-h-control-sm);
 .mio-btn-ghost{background:transparent!important;box-shadow:inset 0 0 0 1px var(--cds-border)}
 a.mio-btn-ghost:hover,button.mio-btn-ghost:hover{background:var(--cds-fill-ghost-hover)!important}
 .mio-auth{margin:0;display:inline-flex}
+a.mio-console{gap:6px;white-space:nowrap;flex:none}
+a.mio-console svg{width:14px;height:14px;flex:none;display:block}
+@media (max-width:420px){a.mio-console{padding:0 8px}.mio-console-l{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}}
+.mio-dialog .ad-danger h3{color:var(--cds-text-danger)}
+.ad-danger-row{display:flex;align-items:center;gap:12px}
+.ad-danger-row .mio-note{margin:0;flex:1;min-width:0}
+.ad-danger-row .mio-btn{flex:none;white-space:nowrap;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--cds-fill-danger) 40%,transparent)}
+@media (max-width:640px){.ad-danger-row{flex-direction:column;align-items:stretch}.ad-danger-row .mio-btn{justify-content:center}}
 button.mio-btn-primary{background:#d97757;color:#fff;box-shadow:var(--cds-shadow-2xs,0 1px 2px rgba(0,0,0,.06))}
 button.mio-btn-primary:hover{background:#cc5a36}
 button.mio-btn-primary:active{filter:brightness(.95)}

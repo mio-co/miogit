@@ -38,14 +38,14 @@ export interface ConsoleDeps {
   siteBase: (env: Env) => { site: string; siteDesc: string; title: string; sub: string; tab: string };
   /** the repository list, signed-in flavour (stats, private repos), with optional per-row settings links */
   indexBody: (env: Env, signedIn: boolean, settings?: boolean) => Promise<string>;
-  /** tell the Worker's per-isolate registry memo that a repo changed */
-  invalidate: (repo: string) => void;
+  /** tell the Worker's per-isolate registry memo (and, with an origin, the edge index cache) that a repo changed */
+  invalidate: (repo: string, origin?: string) => unknown;
 }
 
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const LOCK = `<svg viewBox='0 0 256 256' aria-hidden='true'><rect x='40' y='88' width='176' height='128' rx='8' fill='none' stroke='currentColor' stroke-width='16'/><path d='M88 88V56a40 40 0 0 1 80 0v32' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
 const KEY = `<svg viewBox='0 0 256 256' aria-hidden='true'><circle cx='92' cy='164' r='44' fill='none' stroke='currentColor' stroke-width='16'/><path d='M123 133l85-85M176 80l24 24M152 104l20 20' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
-const GEAR = `<svg viewBox='0 0 256 256' aria-hidden='true'><circle cx='128' cy='128' r='40' fill='none' stroke='currentColor' stroke-width='16'/><path d='M128 24v24M128 208v24M24 128h24M208 128h24M54 54l17 17M185 185l17 17M54 202l17-17M185 71l17-17' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
+export const GEAR = `<svg viewBox='0 0 256 256' aria-hidden='true'><circle cx='128' cy='128' r='40' fill='none' stroke='currentColor' stroke-width='16'/><path d='M128 24v24M128 208v24M24 128h24M208 128h24M54 54l17 17M185 185l17 17M54 202l17-17M185 71l17-17' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
 const WARN = `<svg viewBox='0 0 256 256' aria-hidden='true'><path d='M128 32 16 216h224Z' fill='none' stroke='currentColor' stroke-width='16' stroke-linejoin='round'/><path d='M128 104v48' stroke='currentColor' stroke-width='16' stroke-linecap='round'/><circle cx='128' cy='184' r='10' fill='currentColor'/></svg>`;
 
 const ROLE_LABEL: Record<Role, [string, string]> = {
@@ -69,9 +69,9 @@ function text(msg: string, status: number): Response {
   return noStore(new Response(msg.endsWith("\n") ? msg : msg + "\n", { status, headers: { "content-type": "text/plain; charset=utf-8" } }));
 }
 
-/** Only console paths (or the site root) are acceptable post-login destinations. */
-function safeNext(n: string | null): string {
-  return n && (n === "/" || n.startsWith(`${CONSOLE}/`)) && !n.startsWith("//") && !n.includes("\\") ? n : `${CONSOLE}/`;
+/** Only console paths are acceptable post-login destinations; anything else lands on the console home. */
+export function safeNext(n: string | null): string {
+  return n && n.startsWith(`${CONSOLE}/`) && !n.startsWith("//") && !n.includes("\\") && !/[\x00-\x1f]/.test(n) ? n : `${CONSOLE}/`;
 }
 
 function clientIp(req: Request): string {
@@ -269,6 +269,13 @@ export function createConsole(deps: ConsoleDeps) {
   <div class='mio-dialog-actions'>
     <a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/' data-dialog-cancel>${t("Cancel", "取消")}</a>
     <button type='submit' class='mio-btn mio-btn-primary mio-btn-md'>${t("Save", "保存")}</button>
+  </div>
+  <div class='mio-sec ad-danger'>
+    <h3>${t("Danger zone", "危险区")}</h3>
+    <div class='ad-danger-row'>
+      <p class='mio-note'>${t("Delete this repository with all branches, tags and history. This cannot be undone.", "删除这个仓库及全部分支、标签和历史，不能恢复。")}</p>
+      <a class='mio-btn mio-btn-danger mio-btn-md' href='${CONSOLE}/repos/${repoUrl(info.name)}/delete'>${t("Delete repository", "删除仓库")}</a>
+    </div>
   </div>`;
     return page(
       env,
@@ -278,6 +285,33 @@ export function createConsole(deps: ConsoleDeps) {
         body,
         cancel: `${CONSOLE}/`,
         formAction: `${CONSOLE}/repos/${repoUrl(info.name)}`,
+      }),
+      error ? 400 : 200
+    );
+  }
+
+  async function deleteRepoPage(env: Env, csrf: string, info: RepoInfo, error = ""): Promise<Response> {
+    // native constraint validation (no script): the button only submits once the exact name is typed;
+    // the server checks it again
+    const pattern = info.name.replace(/\./g, "\\.");
+    const body = `
+  ${error ? `<div class='mio-dialog-err' role='alert'>${error}</div>` : ""}
+  <input type='hidden' name='csrf' value='${esc(csrf)}'/>
+  <label class='mio-field'><span>${t("Type the repository name to confirm", "输入完整仓库名以确认")}: <b class='mono' data-noi18n>${esc(info.name)}</b></span><input type='text' name='confirm' required pattern='${esc(pattern)}' autocomplete='off' autocapitalize='off' spellcheck='false' autofocus data-noi18n${error ? " aria-invalid='true'" : ""}/></label>
+  <div class='mio-dialog-actions'>
+    <a class='mio-btn mio-btn-secondary mio-btn-md' href='${CONSOLE}/repos/${repoUrl(info.name)}' data-dialog-cancel>${t("Cancel", "取消")}</a>
+    <button type='submit' class='mio-btn mio-btn-danger-solid mio-btn-md'>${t("Delete repository", "删除仓库")}</button>
+  </div>`;
+    return page(
+      env,
+      dialog({
+        icon: WARN,
+        danger: true,
+        title: `${t("Delete", "删除")} <span data-noi18n>${esc(info.name)}</span>?`,
+        desc: t("All branches, tags, history and settings of this repository are removed, and clones stop working. This cannot be undone.", "这个仓库的全部分支、标签、历史和设置都会被清除，clone 会失效。不能恢复。"),
+        body,
+        cancel: `${CONSOLE}/repos/${repoUrl(info.name)}`,
+        formAction: `${CONSOLE}/repos/${repoUrl(info.name)}/delete`,
       }),
       error ? 400 : 200
     );
@@ -389,7 +423,18 @@ export function createConsole(deps: ConsoleDeps) {
     if (sub === "/logout" && req.method === "POST") return redirect("/", clearSessionCookie());
     if (sub === "/" && req.method === "GET") {
       const n = url.searchParams.get("done");
-      return home(env, csrf, n === "password" ? t("Password changed.", "密码已修改。") : n === "settings" ? t("Settings saved.", "设置已保存。") : "");
+      const dn = url.searchParams.get("name") ?? "";
+      return home(
+        env,
+        csrf,
+        n === "password"
+          ? t("Password changed.", "密码已修改。")
+          : n === "settings"
+            ? t("Settings saved.", "设置已保存。")
+            : n === "deleted" && REPO_NAME.test(dn) && dn.length <= 100
+              ? t(`Repository “${dn}” deleted.`, `已删除仓库「${dn}」。`)
+              : ""
+      );
     }
 
     // ---- tokens ----
@@ -429,6 +474,31 @@ export function createConsole(deps: ConsoleDeps) {
       await registry.setSetting("admin_password_hash", h);
       // the session key is bound to the hash: everyone else is signed out, this browser gets a fresh cookie
       return redirect(`${CONSOLE}/?done=password`, sessionCookie(await makeSession(env, h)));
+    }
+
+    // ---- delete a repository (console only; git tokens, admin included, cannot) ----
+    const rd = /^\/repos\/([^/]+)\/delete$/.exec(sub);
+    if (rd) {
+      let name: string;
+      try {
+        name = decodeURIComponent(rd[1]);
+      } catch {
+        return text("bad repository name", 400);
+      }
+      if (!REPO_NAME.test(name)) return text("bad repository name", 400);
+      const info = await registry.get(name);
+      if (!info) return req.method === "GET" ? redirect(`${CONSOLE}/`) : text(`no such repository: ${name}`, 404);
+      if (req.method === "GET") return deleteRepoPage(env, csrf, info);
+      if (String(form!.get("confirm") ?? "") !== name) return deleteRepoPage(env, csrf, info, t("The name does not match. Nothing was deleted.", "仓库名不一致，未删除。"));
+      // wipe the cell (SQLite tables + alarm) and its R2 packs first, then the registry row:
+      // if the wipe fails the repository stays listed and can be retried
+      const res = await env.REPO.getByName(name).fetch(
+        new Request(`${url.origin}/`, { method: "DELETE", headers: { "x-repo": name, "x-host": url.host, "x-mio-role": "admin", "x-mio-token": "console" } })
+      );
+      if (!res.ok) return deleteRepoPage(env, csrf, info, esc((await res.text()).slice(0, 200)));
+      await registry.remove(name);
+      await deps.invalidate(name, url.origin);
+      return redirect(`${CONSOLE}/?done=deleted&name=${encodeURIComponent(name)}`);
     }
 
     // ---- repository settings ----

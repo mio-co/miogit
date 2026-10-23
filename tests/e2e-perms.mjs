@@ -121,7 +121,15 @@ try {
   commit(src, "b.txt", "admin\n", "c-admin");
   check(git(src, "push", "-q", url(ADMIN_TOKEN, "permtest"), "adminbranch").code === 0, "admin pushes adminbranch");
   git(src, "checkout", "-q", "main");
-  for (const r of ["mio-cli", "MioUI-shopify-admin"]) check(git(src, "push", "-q", url(ADMIN_TOKEN, r), "main").code === 0, `admin creates ${r}`);
+  for (const r of ["mio-cli", "MioUI-shopify-admin", "deltest"]) check(git(src, "push", "-q", url(ADMIN_TOKEN, r), "main").code === 0, `admin creates ${r}`);
+
+  console.log("== console entry button on public pages");
+  const idxHtml = await (await fetch(`${BASE}/`)).text();
+  check(/<a class='mio-btn mio-btn-secondary mio-auth mio-console' href='\/~mio\/'/.test(idxHtml) && idxHtml.includes("管理台"), "site index top bar links to /~mio/ (管理台)");
+  check(/class='[^']*mio-console' href='\/~mio\/'/.test(await (await fetch(`${BASE}/mio-cli/`)).text()), "repository page top bar has the console button too");
+  check(!/<script>/.test(idxHtml), "no inline script on the index");
+  const entry = await fetch(`${BASE}/~mio/`, { redirect: "manual", headers: H() });
+  check(entry.status === 303 && entry.headers.get("location") === "/~mio/login?next=%2F~mio%2F", "signed-out click on the button -> /~mio/login?next=/~mio/");
 
   console.log("== Access gate on /~mio/");
   check((await fetch(`${BASE}/~mio/login`, { redirect: "manual" })).status === 403, "no Access JWT -> 403");
@@ -148,9 +156,12 @@ try {
   check(lp.status === 401 && !lp.headers.get("set-cookie"), "admin git token cannot sign in to the console");
   const wrongUser = await consolePost("/~mio/login", { username: "admin", password: CONSOLE_PASS });
   check(wrongUser.status === 401, "wrong username refused");
-  const li = await consolePost("/~mio/login", { username: "mio", password: CONSOLE_PASS, next: "/~mio/" });
+  const li = await consolePost("/~mio/login", { username: "mio", password: CONSOLE_PASS, next: "/" });
   const sc = takeCookie(li);
   check(li.status === 303 && cookie, "console login with username/password");
+  check(li.headers.get("location") === "/~mio/", "login with next=/ lands on the console home, not the site index");
+  check((await consoleGet("/~mio/login?next=%2F%2Fevil.example")).headers.get("location") === "/~mio/", "next=//evil -> console home");
+  check((await consoleGet("/~mio/login?next=%2F~mio%2Ftokens")).headers.get("location") === "/~mio/tokens", "next=/~mio/tokens is honoured");
   check(/Path=\/~mio\//.test(sc) && /HttpOnly/.test(sc) && /Secure/.test(sc) && /SameSite=Strict/.test(sc) && /Max-Age=\d+/.test(sc), "cookie: Path=/~mio/, HttpOnly, Secure, SameSite=Strict, Max-Age");
   const home = await consoleGet("/~mio/");
   const homeHtml = await home.text();
@@ -272,6 +283,32 @@ try {
   check((await consolePost(`/~mio/tokens/${id}/revoke`, { csrf })).status === 303, "revoke");
   check(git(tmp, "ls-remote", url(W, "permtest")).code !== 0, "revoked writer token fails immediately");
   check(git(tmp, "ls-remote", url(R, "permtest")).code === 0, "other tokens unaffected");
+
+  console.log("== delete a repository (console only)");
+  check((await fetch(`${BASE}/deltest`, { method: "DELETE", headers: basic(ADMIN_TOKEN) })).status === 404, "admin git token cannot DELETE /<repo>");
+  check((await fetch(`${BASE}/deltest/`)).status === 200, "…and deltest still exists");
+  const ds = await (await consoleGet("/~mio/repos/deltest")).text();
+  check(ds.includes("href='/~mio/repos/deltest/delete'"), "settings page shows the danger-zone delete button");
+  const dp = await consoleGet("/~mio/repos/deltest/delete");
+  const dh = await dp.text();
+  check(dp.status === 200 && /name='confirm'[^>]*required/.test(dh) && dh.includes("mio-btn-danger-solid"), "delete confirmation dialog asks for the name");
+  check((await consolePost("/~mio/repos/deltest/delete", { confirm: "deltest" })).status === 403, "delete without CSRF -> 403");
+  check((await consolePost("/~mio/repos/deltest/delete", { csrf, confirm: "deltest" }, { origin: "https://evil.example" })).status === 403, "cross-origin delete -> 403");
+  check((await fetch(`${BASE}/~mio/repos/deltest/delete`, { method: "POST", redirect: "manual", headers: { cookie, origin: BASE, "content-type": "application/x-www-form-urlencoded" }, body: `csrf=${encodeURIComponent(csrf)}&confirm=deltest` })).status === 403, "delete without Access JWT -> 403");
+  check((await consolePost("/~mio/repos/deltest/delete", { csrf, confirm: "deltes" })).status === 400, "wrong name -> 400, nothing deleted");
+  check((await consolePost("/~mio/repos/deltest/delete", { csrf, confirm: "DELTEST" })).status === 400, "name is case-sensitive");
+  check(git(tmp, "ls-remote", `${BASE}/deltest.git`).code === 0, "…deltest still clonable after refused deletes");
+  const del = await consolePost("/~mio/repos/deltest/delete", { csrf, confirm: "deltest" });
+  check(del.status === 303 && del.headers.get("location") === "/~mio/?done=deleted&name=deltest", "delete with the exact name -> back to console home");
+  check((await (await consoleGet("/~mio/?done=deleted&name=deltest")).text()).includes("已删除仓库「deltest」"), "console home shows the success notice");
+  check((await fetch(`${BASE}/deltest.git/info/refs?service=git-upload-pack`)).status === 404, "deleted repo: info/refs 404");
+  const dc = git(tmp, "clone", "-q", `${BASE}/deltest.git`, join(tmp, "c-del"));
+  check(dc.code !== 0 && /404|not found/i.test(dc.out), "deleted repo: git clone fails (404)");
+  check((await fetch(`${BASE}/deltest/`)).status === 404, "deleted repo page 404");
+  check(!(await fetch(`${BASE}/api/repos`, { headers: basic(ADMIN_TOKEN) }).then((x) => x.json())).repos.some((x) => x.name === "deltest"), "registry row removed");
+  check((await consoleGet("/~mio/repos/deltest")).status === 404, "settings for the deleted repo 404");
+  check(git(tmp, "clone", "-q", `${BASE}/mio-cli.git`, join(tmp, "c-cli")).code === 0 && git(tmp, "ls-remote", url(ADMIN_TOKEN, "permtest")).code === 0, "other repositories unaffected");
+  check(git(src, "push", "-q", url(ADMIN_TOKEN, "deltest"), "main").code === 0 && git(tmp, "clone", "-q", `${BASE}/deltest.git`, join(tmp, "c-del2")).code === 0, "the name can be re-created by an admin push afterwards");
 
   console.log("== password change + rate limit");
   check((await consolePost("/~mio/password", { csrf, current: CONSOLE_PASS, next: "short", confirm: "short" })).status === 400, "short new password refused");

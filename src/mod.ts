@@ -19,7 +19,7 @@ import { gunzipLimited } from "./git/zlib";
 import type { RepoCell } from "./repo";
 import { envTokens, resolveToken, secretsEqual as secretsEqualImpl } from "./auth";
 import { roleAllows, type Principal } from "./policy";
-import { createConsole, CONSOLE } from "./admin";
+import { createConsole, CONSOLE, GEAR } from "./admin";
 
 export { RepoCell } from "./repo";
 export { Registry } from "./registry";
@@ -252,7 +252,9 @@ function decorate(res: Response, url: URL): Response {
     if (typeof HTMLRewriter === "undefined") return res;
     return new HTMLRewriter().on("#mh-auth", { element(e) { e.remove(); } }).transform(res);
   }
-  const html = `<a class='mio-btn mio-btn-ghost mio-auth' href='${CONSOLE}/' rel='nofollow'>${t("Console", "管理")}</a>`;
+  // always shown: the console cookie never reaches these pages, so /~mio/ itself
+  // sends a signed-out visitor through /~mio/login and back to the console home
+  const html = `<a class='mio-btn mio-btn-secondary mio-auth mio-console' href='${CONSOLE}/' rel='nofollow' title='Console' data-zh-title='管理台'>${GEAR}<span class='mio-console-l'>${t("Console", "管理台")}</span></a>`;
   if (typeof HTMLRewriter === "undefined") return new Response(res.body, res);
   return new HTMLRewriter()
     .on("#mh-auth", { element(e) { e.replace(html, { html: true }); } })
@@ -586,7 +588,16 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
   const repoRoute = new URLPattern({
     pathname: namespaced ? "/:owner/:name{.git}?{/*}?" : "/:name{.git}?{/*}?",
   });
-  const console_ = createConsole({ siteBase, indexBody, invalidate: (repo) => infoMemo.delete(repo) });
+  const console_ = createConsole({
+    siteBase,
+    indexBody,
+    invalidate: (repo, origin) => {
+      infoMemo.delete(repo);
+      // best effort: drop this colo's cached front page so a deleted repo leaves the list now
+      const cache = origin ? pageCache() : null;
+      return cache?.delete(new Request(`${origin}/?__index&__ui=${UI_VER}`, { method: "GET" })).catch(() => false);
+    },
+  });
   const inner = async (req: Request, env: E, ctx: ExecutionContext): Promise<Response> => {
       const url = new URL(req.url);
       const path = url.pathname;
