@@ -4,7 +4,9 @@
  * decides who may reach a repository) and the RepoCell (which decides, per ref
  * update command, what a push may change).
  *
- *   admin  — everything (the GIT_TOKEN / GIT_TOKENS secrets, plus admin tokens)
+ *   owner  — everything admin can do, plus deleting repositories over HTTP
+ *            (owner tokens are created in the console; nothing else is owner)
+ *   admin  — everything else (the GIT_TOKEN / GIT_TOKENS secrets, plus admin tokens)
  *   writer — read every repository; push branches other than main / the default
  *            branch: create, fast-forward, and delete or force-push only the
  *            branches it created itself. No tags, no new repositories, no
@@ -12,11 +14,16 @@
  *   reader — read every repository; every push is refused.
  */
 
-export type Role = "admin" | "writer" | "reader";
-export const ROLES: readonly Role[] = ["admin", "writer", "reader"];
+export type Role = "owner" | "admin" | "writer" | "reader";
+export const ROLES: readonly Role[] = ["owner", "admin", "writer", "reader"];
+
+/** admin-level rights: owner is admin plus repository deletion */
+export function isAdminRole(role: Role | null | undefined): boolean {
+  return role === "admin" || role === "owner";
+}
 
 export function isRole(v: unknown): v is Role {
-  return v === "admin" || v === "writer" || v === "reader";
+  return v === "owner" || v === "admin" || v === "writer" || v === "reader";
 }
 
 /** Who a request authenticated as. `id` is stable per token (env tokens: "env:<n>"). */
@@ -64,7 +71,7 @@ export const MSG = {
  * per command, in order.
  */
 export function prePushReasons(p: Principal, commands: PolicyCommand[], ctx: PrePushContext): (string | null)[] {
-  if (p.role === "admin") return commands.map(() => null);
+  if (isAdminRole(p.role)) return commands.map(() => null);
   if (p.role !== "writer") return commands.map(() => MSG.readOnly);
   const prot = protectedRefs(ctx.head);
   return commands.map((c) => {
@@ -81,7 +88,7 @@ export function prePushReasons(p: Principal, commands: PolicyCommand[], ctx: Pre
  * run after validatePush has classified each command.
  */
 export function postPushReason(p: Principal, ref: string, forced: boolean, ownerOf: (ref: string) => string | null): string | null {
-  if (p.role === "admin") return null;
+  if (isAdminRole(p.role)) return null;
   if (p.role !== "writer") return MSG.readOnly;
   if (forced && ownerOf(ref) !== p.id) return MSG.notOwnerForce;
   return null;
@@ -100,6 +107,6 @@ export function atomicReasons(reasons: (string | null)[]): string[] | null {
 /** Worker-level gate: may this principal perform `op` at all? */
 export function roleAllows(role: Role | null, op: "read" | "write" | "admin", isPrivate: boolean): boolean {
   if (op === "read") return !isPrivate || role !== null;
-  if (op === "write") return role === "admin" || role === "writer";
-  return role === "admin";
+  if (op === "write") return isAdminRole(role) || role === "writer";
+  return isAdminRole(role);
 }

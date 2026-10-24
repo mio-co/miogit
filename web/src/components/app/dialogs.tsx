@@ -159,7 +159,7 @@ export function PasswordDialog({ open, onClose }: { open: boolean; onClose: () =
   );
 }
 
-const ROLE: Record<TokenRow['role'], [string, string]> = { admin: ['Admin', '管理员'], writer: ['Writer', '写入'], reader: ['Reader', '只读'] };
+const ROLE: Record<TokenRow['role'], [string, string]> = { owner: ['Owner', '超级管理员'], admin: ['Admin', '管理员'], writer: ['Writer', '写入'], reader: ['Reader', '只读'] };
 
 interface TokensData { tokens: TokenRow[]; now: number; expiry: { id: string; en: string; zh: string }[]; expiryDefault: string }
 
@@ -304,7 +304,7 @@ export function TokensDialog({ open, onClose }: { open: boolean; onClose: () => 
                             </span>
                           </td>
                           <td>
-                            <Badge variant={r.role === 'admin' ? 'accent' : 'neutral'}>{lang === 'zh' ? ROLE[r.role][1] : ROLE[r.role][0]}</Badge>
+                            <Badge variant={r.role === 'admin' || r.role === 'owner' ? 'accent' : 'neutral'}>{lang === 'zh' ? ROLE[r.role][1] : ROLE[r.role][0]}</Badge>
                           </td>
                           <td className="tabular-nums max-sm:hidden">{fmtTime(r.created)}</td>
                           <td className="tabular-nums max-sm:hidden">{expiryCell(r)}</td>
@@ -341,6 +341,7 @@ export function TokensDialog({ open, onClose }: { open: boolean; onClose: () => 
                     { value: 'writer', label: `${ROLE.writer[1]} writer` },
                     { value: 'reader', label: `${ROLE.reader[1]} reader` },
                     { value: 'admin', label: `${ROLE.admin[1]} admin` },
+                    { value: 'owner', label: `${ROLE.owner[1]} owner` },
                   ]}
                 />
               </Field>

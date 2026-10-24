@@ -38,7 +38,7 @@ import { tarGz, zip, SnapshotFile } from "./git/snapshot";
 import { esc, repoUrl, repoBase, age, fmtDate, fmtDate2822, layout, htmlResponse, errorPage, LayoutOpts, t, emptyState, breadcrumb } from "./ui/html";
 import { ICON_BOOK_OPEN, ICON_CARET_DOWN, ICON_CARET_LEFT, ICON_CARET_RIGHT, ICON_CHART_BAR, ICON_CODE, ICON_COPY, ICON_DATABASE, ICON_DOWNLOAD, ICON_FILE, ICON_FILE_CODE, ICON_FILE_TEXT, ICON_FOLDER, ICON_GIT_BRANCH, ICON_GIT_COMMIT, ICON_GIT_DIFF, ICON_HISTORY, ICON_IMAGE, ICON_LINK, ICON_PENCIL, ICON_REPO, ICON_SEARCH, ICON_TAG, ICON_X } from "./ui/icons";
 import { renderMarkdown } from "./ui/markdown";
-import { prePushReasons, postPushReason, atomicReasons, isRole, ZERO_OID as POLICY_ZERO, type Principal } from "./policy";
+import { prePushReasons, postPushReason, atomicReasons, isRole, isAdminRole, ZERO_OID as POLICY_ZERO, type Principal } from "./policy";
 import { highlightLines } from "./ui/highlight";
 import { applyChanges, badBranchName, EditError, type Change } from "./git/tree-edit";
 
@@ -975,7 +975,7 @@ export class RepoCell extends DurableObject<Env> {
     const plan = await validatePush(this.store, commands, unpackError, packId);
     // access policy, part 2: fast-forward-ness is only known now. Any refusal
     // refuses the whole push (no ref moves); orphaned objects are left to gc
-    if (principal.role !== "admin") {
+    if (!isAdminRole(principal.role)) {
       const post = atomicReasons(
         plan.decisions.map((d) => (d.reject ? null : postPushReason(principal, d.ref, !!d.forced, ownerOf)))
       );
@@ -1027,7 +1027,7 @@ export class RepoCell extends DurableObject<Env> {
       const v = o.replace(/^visibility=/, "");
       if (v === "private" || v === "public") visibility = v;
     }
-    if (visibility && principal.role !== "admin") {
+    if (visibility && !isAdminRole(principal.role)) {
       progress(`visibility option ignored: only an admin token can set it\n`);
       visibility = undefined;
     }

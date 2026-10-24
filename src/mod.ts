@@ -18,7 +18,7 @@ import { isOid } from "./git/util";
 import { gunzipLimited } from "./git/zlib";
 import type { RepoCell } from "./repo";
 import { envTokens, hasHint, resolveToken, secretsEqual as secretsEqualImpl } from "./auth";
-import { roleAllows, type Principal } from "./policy";
+import { roleAllows, isAdminRole, type Principal } from "./policy";
 import { createConsole, CONSOLE } from "./admin";
 import { ICON_PENCIL, ICON_REPO, ICON_SIGN_IN, ICON_USER_CIRCLE } from "./ui/icons";
 import { handleSync, SYNC_PREFIX } from "./sync";
@@ -865,7 +865,7 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
       // what the cell enforces per ref: the token's role (a custom hook that
       // admitted the request without a token principal counts as admin)
       const role = who?.role ?? "admin";
-      if (isReceive && !info && role !== "admin") {
+      if (isReceive && !info && !isAdminRole(role)) {
         // pushing to a new name creates a repository: admin only
         if (sub === "/info/refs") return gitError("git-receive-pack", "writer token cannot create repositories");
         return forbidden("writer token cannot create repositories");
@@ -887,12 +887,13 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
 
       // admin tokens may also manage a repository over plain HTTP (the console
       // does the same behind Access): PUT /description (text), PUT /config
-      // (JSON: description/owner/section/private), DELETE /
+      // (JSON: description/owner/section/private); DELETE / needs an owner token
       if (isAdmin && sub !== "/gc") {
-        if (role !== "admin") return forbidden("admin token required");
+        if (!isAdminRole(role)) return forbidden("admin token required");
         const cell = env.REPO.getByName(repo);
         const hdr = { "content-type": "application/json", "x-repo": repo, "x-host": url.host, "x-mio-role": "admin", "x-mio-token": who?.id ?? "hook" };
         if (req.method === "DELETE") {
+          if (role !== "owner") return forbidden("owner token required to delete a repository");
           const r = await cell.fetch(new Request(`${url.origin}/`, { method: "DELETE", headers: hdr }));
           if (!r.ok) return r;
           await registry.remove(repo);

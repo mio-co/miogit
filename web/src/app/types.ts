@@ -102,5 +102,5 @@ export interface Storage {
   limits: { doBytes: number; r2Bytes: number; rowsRead: number; rowsWritten: number };
   top: { name: string; bytes: number }[];
 }
-export interface TokenRow { id: string; name: string; role: 'admin' | 'writer' | 'reader'; created: number; last_used: number; expires_at: number }
+export interface TokenRow { id: string; name: string; role: 'owner' | 'admin' | 'writer' | 'reader'; created: number; last_used: number; expires_at: number }
 export interface RepoSettings { name: string; description: string; owner: string; section: string; private: boolean; sync?: boolean; syncAt?: string | null; syncLinked?: boolean; syncConflicts?: string[] }

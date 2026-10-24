@@ -75,6 +75,7 @@ function overLength(req: Request, max: number): boolean {
 const LOCK = `<svg viewBox='0 0 256 256' aria-hidden='true'><rect x='40' y='88' width='176' height='128' rx='8' fill='none' stroke='currentColor' stroke-width='16'/><path d='M88 88V56a40 40 0 0 1 80 0v32' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
 
 const ROLE_LABEL: Record<Role, [string, string]> = {
+  owner: ["Owner", "超级管理员"],
   admin: ["Admin", "管理员"],
   writer: ["Writer", "写入"],
   reader: ["Reader", "只读"],
@@ -338,7 +339,7 @@ export function createConsole(deps: ConsoleDeps) {
   <div class='mio-row tk-row'>
     <label class='mio-field'><span>${t("Name", "名称")}</span><input type='text' name='name' maxlength='64' required placeholder='hark6' autocomplete='off' spellcheck='false'/></label>
     <label class='mio-field mio-narrow'><span>${t("Role", "角色")}</span><select name='role'>
-      <option value='writer'>${ROLE_LABEL.writer[1]} writer</option><option value='reader'>${ROLE_LABEL.reader[1]} reader</option><option value='admin'>${ROLE_LABEL.admin[1]} admin</option></select></label>
+      <option value='writer'>${ROLE_LABEL.writer[1]} writer</option><option value='reader'>${ROLE_LABEL.reader[1]} reader</option><option value='admin'>${ROLE_LABEL.admin[1]} admin</option><option value='owner'>${ROLE_LABEL.owner[1]} owner</option></select></label>
     <label class='mio-field mio-narrow'><span>${t("Expiration", "过期时间")}</span><select name='expires'>${expiryOpts}</select></label>
     <button type='submit' class='mio-btn mio-btn-primary mio-btn-md tk-create'>${t("Create token", "创建令牌")}</button>
   </div>

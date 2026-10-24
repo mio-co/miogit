@@ -1,7 +1,7 @@
 // Unit tests for the pure access policy. Run: node --test tests/  (Node >= 22.18 strips types)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prePushReasons, postPushReason, atomicReasons, roleAllows, MSG, ZERO_OID, type Principal } from "../src/policy.ts";
+import { prePushReasons, postPushReason, atomicReasons, roleAllows, isAdminRole, isRole, MSG, ZERO_OID, type Principal } from "../src/policy.ts";
 
 const A = "a".repeat(40), B = "b".repeat(40);
 const admin: Principal = { role: "admin", id: "env:0", name: "GIT_TOKEN" };
@@ -57,4 +57,14 @@ test("worker gate", () => {
   assert.equal(roleAllows("writer", "write", true), true);
   assert.equal(roleAllows("writer", "admin", false), false);
   assert.equal(roleAllows("admin", "admin", true), true);
+  assert.equal(roleAllows("owner", "admin", true), true);
+  assert.equal(roleAllows("owner", "write", true), true);
+});
+
+test("owner role", () => {
+  assert.equal(isRole("owner"), true);
+  assert.equal(isAdminRole("owner"), true);
+  assert.equal(isAdminRole("admin"), true);
+  assert.equal(isAdminRole("writer"), false);
+  assert.equal(isAdminRole(null), false);
 });
