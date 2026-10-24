@@ -50,7 +50,7 @@ export function advertisement(store: GitStore, service: Service, v2 = false): Ui
           `symref=HEAD:${store.head()}`,
           AGENT,
         ].join(" ")
-      : ["report-status", "delete-refs", "ofs-delta", "side-band-64k", AGENT].join(" ");
+      : ["report-status", "delete-refs", "ofs-delta", "side-band-64k", "push-options", AGENT].join(" ");
 
   const lines: Uint8Array[] = [pkt(`# service=${service}\n`), FLUSH];
   const refs: { name: string; target: string }[] = [];

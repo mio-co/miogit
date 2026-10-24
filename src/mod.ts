@@ -986,7 +986,13 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
         const idle = parseInt(res.headers.get("x-commit-time") ?? "", 10) || Date.now();
         try {
           // a registry hiccup must not fail an already-applied push; next push heals
+          // visibility: an admin's "git push -o private|public" sets it; a
+          // repository created by a push without the option starts private
+          // (open it up with -o public or in the console)
+          const vis = res.headers.get("x-visibility");
+          if (!info) await registry.ensure(repo, vis !== "public");
           await registry.upsert(repo, idle, res.headers.get("x-main-lang") ?? undefined);
+          if (info && vis && (vis === "private") !== !!info.priv) await registry.setConfig(repo, { priv: vis === "private" }, idle);
           const sb = parseStoreBytes(res);
           if (sb) await registry.setBytes(repo, sb);
         } catch {

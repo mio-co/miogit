@@ -162,12 +162,24 @@ try {
   writeFileSync(join(src, "README.md"), "# Title\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1))\n");
   git(src, "add", "-A");
   git(src, "commit", "-qm", "readme");
-  check(git(src, "push", "-q", url(ADMIN_TOKEN, "permtest"), "main").code === 0, "admin pushes new repo permtest (main)");
+  check(git(src, "push", "-q", "-o", "public", url(ADMIN_TOKEN, "permtest"), "main").code === 0, "admin pushes new repo permtest (main)");
   git(src, "checkout", "-qb", "adminbranch");
   commit(src, "b.txt", "admin\n", "c-admin");
   check(git(src, "push", "-q", url(ADMIN_TOKEN, "permtest"), "adminbranch").code === 0, "admin pushes adminbranch");
   git(src, "checkout", "-q", "main");
-  for (const r of ["mio-cli", "MioUI-shopify-admin", "deltest"]) check(git(src, "push", "-q", url(ADMIN_TOKEN, r), "main").code === 0, `admin creates ${r}`);
+  for (const r of ["mio-cli", "MioUI-shopify-admin", "deltest"]) check(git(src, "push", "-q", "-o", "public", url(ADMIN_TOKEN, r), "main").code === 0, `admin creates ${r} (-o public)`);
+
+  console.log("== visibility on push: new repos start private, admin -o private|public");
+  const anonRefs = async (r) => (await fetch(`${BASE}/${r}.git/info/refs?service=git-upload-pack`)).status;
+  check(git(src, "push", "-q", url(ADMIN_TOKEN, "vistest"), "main").code === 0, "admin creates vistest (no option)");
+  check((await anonRefs("vistest")) === 401, "a repo created by push starts private (anonymous read refused)");
+  check((await anonRefs("permtest")) === 200 && (await anonRefs("mio-cli")) === 200, "-o public created public repos");
+  git(src, "checkout", "-qb", "vis2");
+  commit(src, "v.txt", "v\n", "vis");
+  check(git(src, "push", "-q", "-o", "public", url(ADMIN_TOKEN, "vistest"), "vis2").code === 0 && (await anonRefs("vistest")) === 200, "admin push -o public opens an existing private repo");
+  commit(src, "v.txt", "v2\n", "vis2");
+  check(git(src, "push", "-q", "-o", "private", url(ADMIN_TOKEN, "vistest"), "vis2").code === 0 && (await anonRefs("vistest")) === 401, "admin push -o private closes it again");
+  git(src, "checkout", "-q", "main");
 
   console.log("== React frontend: shell, first data inlined, static assets");
   const idx = await fetch(`${BASE}/`);
@@ -500,7 +512,7 @@ try {
   git(wdir, "commit", "-qm", "init");
   mkdirSync(join(wdir, "src"), { recursive: true });
   commit(wdir, "src/a.txt", "a\n", "add a");
-  check(git(wdir, "push", "-q", url(ADMIN_TOKEN, "webfiles"), "main").code === 0, "admin creates webfiles");
+  check(git(wdir, "push", "-q", "-o", "public", url(ADMIN_TOKEN, "webfiles"), "main").code === 0, "admin creates webfiles");
   git(wdir, "checkout", "-qb", "dev");
   commit(wdir, "dev.txt", "d\n", "on dev");
   check(git(wdir, "push", "-q", url(ADMIN_TOKEN, "webfiles"), "dev").code === 0, "admin pushes dev");
@@ -663,7 +675,7 @@ try {
   check(!(await (await fetch(`${BASE}/`)).text()).includes('"deltest"'), "public index no longer lists it (edge list cache dropped)");
   check((await consoleGet("/~mio/repos/deltest")).status === 404, "settings for the deleted repo 404");
   check(git(tmp, "clone", "-q", `${BASE}/mio-cli.git`, join(tmp, "c-cli")).code === 0 && git(tmp, "ls-remote", url(ADMIN_TOKEN, "permtest")).code === 0, "other repositories unaffected");
-  check(git(src, "push", "-q", url(ADMIN_TOKEN, "deltest"), "main").code === 0 && git(tmp, "clone", "-q", `${BASE}/deltest.git`, join(tmp, "c-del2")).code === 0, "the name can be re-created by an admin push afterwards");
+  check(git(src, "push", "-q", "-o", "public", url(ADMIN_TOKEN, "deltest"), "main").code === 0 && git(tmp, "clone", "-q", `${BASE}/deltest.git`, join(tmp, "c-del2")).code === 0, "the name can be re-created by an admin push afterwards");
 
   console.log("== GitHub two-way sync (hook, webhook, workflow API)");
   const waitDispatch = async (pred, ms = 4000) => {
@@ -677,11 +689,12 @@ try {
   const sdir = join(tmp, "syncsrc");
   git(tmp, "init", "-q", sdir);
   commit(sdir, "s.txt", "s1\n", "s1");
-  check(git(sdir, "push", "-q", url(ADMIN_TOKEN, "synctest"), "main").code === 0, "admin push creates synctest");
+  check(git(sdir, "push", "-q", "-o", "public", url(ADMIN_TOKEN, "synctest"), "main").code === 0, "admin push creates synctest");
   const d1 = await waitDispatch((d) => d.client_payload?.repo === "synctest");
   check(d1?.event_type === "miogit-push" && d1.client_payload.origin === "miogit" && d1.client_payload.private === false && d1.client_payload.refs?.[0]?.ref === "refs/heads/main" && d1.auth === `Bearer ${SYNC_PAT}` && /^[0-9a-f]{16}$/.test(d1.client_payload.group ?? "") && !d1.client_payload.group.includes("synctest"), "push -> repository_dispatch miogit-push (repo, refs, public, PAT, hashed group)");
   check(git(sdir, "push", "-q", url(ADMIN_TOKEN, "syncpriv"), "main").code === 0, "admin push creates syncpriv");
-  await waitDispatch((d) => d.client_payload?.repo === "syncpriv");
+  const dPriv = await waitDispatch((d) => d.client_payload?.repo === "syncpriv");
+  check(dPriv?.client_payload?.private === true, "a repo created by a push without -o is synced as private");
   check((await apiPost("/~mio/api/repos/syncpriv", { s: "visibility", private: true })).status === 200, "syncpriv made private in the console");
   commit(sdir, "s.txt", "s2\n", "s2");
   dispatches.length = 0;

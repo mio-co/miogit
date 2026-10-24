@@ -789,8 +789,9 @@ export class RepoCell extends DurableObject<Env> {
     );
     let commitTime: number | null;
     let updates: AppliedUpdate[];
+    let visibility: "private" | "public" | undefined;
     try {
-      ({ commitTime, updates } = await run);
+      ({ commitTime, updates, visibility } = await run);
     } catch (err) {
       console.log(`[receive ${repo}] FAILED: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
       const msg = err instanceof Error ? err.message : String(err);
@@ -806,6 +807,7 @@ export class RepoCell extends DurableObject<Env> {
     if (commitTime !== null) {
       headers["x-changed"] = "1";
       headers["x-commit-time"] = String(commitTime);
+      if (visibility) headers["x-visibility"] = visibility;
       headers["x-main-lang"] = await this.mainLang().catch(() => "");
       try { headers["x-store-bytes"] = JSON.stringify(this.storageBytes()); } catch { /* optional */ }
       // the applied ref updates, for the Worker's onPush hook. URI-encoded to
@@ -831,7 +833,7 @@ export class RepoCell extends DurableObject<Env> {
     repo: string,
     maxBytes: number,
     emit: (chunk: Uint8Array) => void
-  ): Promise<{ commitTime: number | null; updates: AppliedUpdate[] }> {
+  ): Promise<{ commitTime: number | null; updates: AppliedUpdate[]; visibility?: "private" | "public" }> {
     console.log(`[receive ${repo}] processing push request`);
     let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     let buf: Uint8Array;
@@ -867,6 +869,25 @@ export class RepoCell extends DurableObject<Env> {
       pos += len;
     }
     const { commands, caps } = parsePushCommands(buf.subarray(0, pos));
+    // push options (git push -o …): a second pkt-line section, ended by its own
+    // flush, between the commands and the pack. Only "private" / "public" mean
+    // anything here (an admin token setting visibility); others are ignored.
+    const pushOptions: string[] = [];
+    if (caps.includes("push-options")) {
+      for (;;) {
+        if (!(await need(4))) break;
+        const len = parseInt(td.decode(buf.subarray(pos, pos + 4)), 16);
+        if (Number.isNaN(len)) throw new Error("bad pkt-line in push options");
+        if (len === 0) {
+          pos += 4;
+          break;
+        }
+        if (len < 4 || len > 1004) throw new Error("bad push option");
+        if (!(await need(len))) throw new Error("truncated push options");
+        if (pushOptions.length < 32) pushOptions.push(td.decode(buf.subarray(pos + 4, pos + len)).replace(/\n$/, "").trim().toLowerCase());
+        pos += len;
+      }
+    }
     const wantStatus = caps.includes("report-status");
     const sideband = caps.includes("side-band-64k");
     const progress = (msg: string) => {
@@ -1000,7 +1021,19 @@ export class RepoCell extends DurableObject<Env> {
     const updates = commands
       .filter((_, i) => results[i]?.ok === true)
       .map((c) => ({ ref: c.ref, old: c.old, new: c.next }));
-    return { commitTime, updates };
+    // visibility push option: admin tokens only, applied with a successful push
+    let visibility: "private" | "public" | undefined;
+    for (const o of pushOptions) {
+      const v = o.replace(/^visibility=/, "");
+      if (v === "private" || v === "public") visibility = v;
+    }
+    if (visibility && principal.role !== "admin") {
+      progress(`visibility option ignored: only an admin token can set it\n`);
+      visibility = undefined;
+    }
+    if (visibility && commitTime !== null) this.store.setMeta("private", visibility === "private" ? "1" : "0");
+    else visibility = undefined;
+    return { commitTime, updates, visibility };
   }
 
 
