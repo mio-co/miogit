@@ -1184,8 +1184,8 @@ function childOids(obj: { type: ObjType; data: Uint8Array }): string[] {
  * objects reference is present in `pack_objects` ∪ `objects` — and return the
  * first missing child, or null when complete. This is the storage-backed
  * counterpart to walking the graph: it scans the pack's non-blob objects one
- * keyset page at a time, stages their referenced children into `push_edges` in
- * bounded batches, and lets SQLite anti-join each batch against the stores. A
+ * keyset page at a time and checks their referenced children against the stores
+ * in bounded batches (read-only lookups, no scratch rows). A
  * complete pack means every tip in it has a complete closure (by induction over
  * the edges), so the whole push is connected — checked in flat memory, with no
  * OidSet that scales with the object count. Used for a fresh push, where the
@@ -1194,15 +1194,12 @@ function childOids(obj: { type: ObjType; data: Uint8Array }): string[] {
 async function packComplete(store: GitStore, packId: number): Promise<string | null> {
   const PAGE = 1000;
   const EDGE_BATCH = 8192;
-  store.resetPushEdges();
   let after = "";
   let pending: string[] = [];
   const flush = (): string | null => {
     if (!pending.length) return null;
-    store.addPushEdges(pending);
+    const miss = store.firstMissing(pending);
     pending = [];
-    const miss = store.firstMissingPushEdge();
-    store.resetPushEdges();
     return miss;
   };
   for (;;) {

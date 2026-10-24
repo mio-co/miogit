@@ -227,6 +227,9 @@ export class PackStore {
         data BLOB NOT NULL,
         PRIMARY KEY (pack_id, seq)
       );
+      -- WITHOUT ROWID: the oid key is the table, so an insert writes one b-tree
+      -- row instead of a rowid row plus a separate PK index row (DO bills rows
+      -- written per b-tree). Repos created before keep their rowid table.
       CREATE TABLE IF NOT EXISTS pack_objects (
         oid TEXT PRIMARY KEY,
         pack_id INTEGER NOT NULL,
@@ -237,7 +240,7 @@ export class PackStore {
         size INTEGER NOT NULL,
         entry_size INTEGER NOT NULL,
         base_oid TEXT
-      );
+      ) WITHOUT ROWID;
       CREATE INDEX IF NOT EXISTS idx_pack_objects_loc ON pack_objects(pack_id, offset);
       CREATE TABLE IF NOT EXISTS pack_pending (
         pack_id INTEGER NOT NULL,

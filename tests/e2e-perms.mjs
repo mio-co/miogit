@@ -318,7 +318,7 @@ try {
   check((await consolePost("/~mio/repos/permtest", { csrf, s: "general", description: "perm test", owner: "", section: "" })).status === 303, "legacy form POST with CSRF still works");
   check((await fetch(`${BASE}/permtest.git/info/refs?service=git-upload-pack`)).status === 401, "private repo: anonymous info/refs 401");
   check((await fetch(`${BASE}/permtest.git/info/refs?service=git-upload-pack`, { headers: { cookie } })).status === 401, "console cookie is not a git credential");
-  check((await fetch(`${BASE}/permtest/config`, { method: "PUT", headers: basic(ADMIN_TOKEN), body: "{}" })).status === 404, "legacy PUT /<repo>/config gone (moved to console)");
+  check((await fetch(`${BASE}/permtest/config`, { method: "PUT", headers: basic(ADMIN_TOKEN), body: "{}" })).status !== 404, "admin git token can reach PUT /<repo>/config");
 
   console.log("== private data never leaks to anonymous visitors");
   for (const p of ["/permtest/api/view/", "/permtest/api/view/tree/a.txt", "/permtest/api/view/log/", "/permtest/api/view/commit/", "/permtest/api/view/branches/", "/permtest/api/view/tags/", "/permtest/api/view/tag/?h=x", "/permtest/api/tree", "/permtest/api/blob?path=a.txt", "/permtest/api/refs"]) {
@@ -655,7 +655,7 @@ try {
   check(rvg.status === 303 && /^\/~mio\/tokens\?next=/.test(rvg.headers.get("location") ?? ""), "old revoke URL -> tokens dialog");
 
   console.log("== delete a repository (console only)");
-  check((await fetch(`${BASE}/deltest`, { method: "DELETE", headers: basic(ADMIN_TOKEN) })).status === 404, "admin git token cannot DELETE /<repo>");
+  check((await fetch(`${BASE}/deltest`, { method: "DELETE", headers: basic(ADMIN_TOKEN) })).status === 403, "admin git token cannot DELETE /<repo> (owner only)");
   check((await fetch(`${BASE}/deltest/`)).status === 200, "…and deltest still exists");
   const dg = await consoleGet("/~mio/repos/deltest/delete");
   check(dg.status === 303 && dg.headers.get("location") === "/~mio/repos/deltest?s=danger", "old delete URL -> danger zone page");

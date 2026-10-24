@@ -63,9 +63,10 @@ export class GitStore {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      -- WITHOUT ROWID: one b-tree write per oid (see pack_objects)
       CREATE TABLE IF NOT EXISTS reachable (
         oid TEXT PRIMARY KEY
-      );
+      ) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS peeled (
         oid TEXT PRIMARY KEY,
         target TEXT NOT NULL
@@ -75,9 +76,6 @@ export class GitStore {
         period TEXT NOT NULL,
         data TEXT NOT NULL,
         PRIMARY KEY (tip_oid, period)
-      );
-      CREATE TABLE IF NOT EXISTS push_edges (
-        child TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS ref_owner (
         ref TEXT PRIMARY KEY,
@@ -161,9 +159,8 @@ export class GitStore {
   // Connectivity of a fresh push is checked in SQL, not by an in-memory graph
   // walk: the pushed pack must be complete, i.e. every object it introduces
   // must have its referenced children in `pack_objects` ∪ `objects`. Children
-  // are staged into `push_edges` in bounded batches and each batch is
-  // anti-joined against the stores, so the check costs O(batch) rows of scratch
-  // rather than an OidSet that scales with the object count.
+  // are checked in bounded in-memory batches with read-only lookups, so the
+  // check holds O(batch) oids rather than an OidSet that scales with the pack.
 
   /** A page of a pack's non-blob oids after `after` (keyset, so the scan holds
    * one page, never the whole pack). Empty array ends the walk. */
@@ -179,33 +176,25 @@ export class GitStore {
       .map((r) => r.oid);
   }
 
-  resetPushEdges(): void {
-    this.sql.exec("DELETE FROM push_edges");
-  }
-
-  /** Stage referenced child oids, chunked under the DO's ~100 bound-variable
-   * statement cap. */
-  addPushEdges(children: string[]): void {
-    for (let i = 0; i < children.length; i += 64) {
-      const batch = children.slice(i, i + 64);
-      const values = batch.map(() => "(?)").join(",");
-      this.sql.exec(`INSERT INTO push_edges (child) VALUES ${values}`, ...batch);
+  /** The first of `children` absent from both stores, or null when all are
+   * present. Membership is read in bound-variable-sized IN batches: reads only,
+   * so a push no longer writes (and deletes) one scratch row per edge, which
+   * was most of a push's DO rows-written bill. The caller bounds the batch. */
+  firstMissing(children: string[]): string | null {
+    const want = [...new Set(children)];
+    for (let i = 0; i < want.length; i += 64) {
+      const batch = want.slice(i, i + 64);
+      const marks = batch.map(() => "?").join(",");
+      const found = new Set(
+        this.sql.exec<{ oid: string }>(`SELECT oid FROM pack_objects WHERE oid IN (${marks})`, ...batch).toArray().map((r) => r.oid),
+      );
+      for (const oid of batch) {
+        if (found.has(oid)) continue;
+        if (this.hasLoose && this.sql.exec("SELECT 1 FROM objects WHERE oid = ?", oid).toArray().length) continue;
+        return oid;
+      }
     }
-  }
-
-  /** The first staged child absent from both stores, or null when every staged
-   * child is present. SQLite runs the membership test over its own indexes, so
-   * no oid set is built in the isolate. */
-  firstMissingPushEdge(): string | null {
-    const rows = this.sql
-      .exec<{ child: string }>(
-        `SELECT e.child FROM push_edges e
-         WHERE NOT EXISTS (SELECT 1 FROM pack_objects p WHERE p.oid = e.child)
-           AND NOT EXISTS (SELECT 1 FROM objects o WHERE o.oid = e.child)
-         LIMIT 1`,
-      )
-      .toArray();
-    return rows.length ? rows[0].child : null;
+    return null;
   }
 
   /** Resolve an abbreviated oid; null if unknown or ambiguous. */
