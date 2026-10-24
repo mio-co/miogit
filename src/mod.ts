@@ -821,10 +821,6 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
         if (req.method === "GET" && sub.startsWith("/edit/")) return redirect(`${CONSOLE}/edit/${repoUrl(repo)}${sub.slice(5)}${url.search}`);
         return new Response("the web editor lives under /~mio/edit/\n", { status: 404 });
       }
-      // configuration / gc / delete are console-only now (/~mio/repos/<name>)
-      if (isAdmin) {
-        return new Response("repository management moved to the console: /~mio/repos/<name>\n", { status: 404 });
-      }
 
       const registry = env.REGISTRY.getByName("registry");
 
@@ -887,6 +883,42 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
           if (shell) return shell;
         }
         return errorPage(siteBase(env), `no such repository: ${repo}`, 404);
+      }
+
+      // admin tokens may also manage a repository over plain HTTP (the console
+      // does the same behind Access): PUT /description (text), PUT /config
+      // (JSON: description/owner/section/private), DELETE /
+      if (isAdmin && sub !== "/gc") {
+        if (role !== "admin") return forbidden("admin token required");
+        const cell = env.REPO.getByName(repo);
+        const hdr = { "content-type": "application/json", "x-repo": repo, "x-host": url.host, "x-mio-role": "admin", "x-mio-token": who?.id ?? "hook" };
+        if (req.method === "DELETE") {
+          const r = await cell.fetch(new Request(`${url.origin}/`, { method: "DELETE", headers: hdr }));
+          if (!r.ok) return r;
+          await registry.remove(repo);
+          infoMemo.delete(repo);
+          await invalidateRepo(repo, url.origin);
+          return new Response(`deleted ${repo}\n`);
+        }
+        const text = await req.text();
+        let patch: Record<string, unknown> = { description: text };
+        if (sub === "/config") {
+          try { patch = JSON.parse(text); } catch { return new Response("invalid JSON\n", { status: 400 }); }
+        }
+        const s = (k: string, cur: string, max: number) => (typeof patch[k] === "string" ? (patch[k] as string).trim().slice(0, max) : cur);
+        const cfg = {
+          description: s("description", info!.desc, 500),
+          owner: s("owner", info!.owner, 64),
+          section: s("section", info!.section, 64),
+          private: typeof patch.private === "boolean" ? patch.private : !!info!.priv,
+        };
+        const r = await cell.fetch(new Request(`${url.origin}/config`, { method: "PUT", headers: hdr, body: JSON.stringify(cfg) }));
+        if (!r.ok) return r;
+        const idle = parseInt(r.headers.get("x-commit-time") ?? "", 10) || info!.idle;
+        await registry.setConfig(repo, { desc: cfg.description, owner: cfg.owner, section: cfg.section, priv: cfg.private }, idle, r.headers.get("x-main-lang") ?? undefined);
+        infoMemo.delete(repo);
+        await invalidateRepo(repo, url.origin);
+        return Response.json({ name: repo, ...cfg });
       }
 
       // React frontend: the page's view JSON (through this same gate and the page
