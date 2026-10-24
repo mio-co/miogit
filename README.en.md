@@ -16,6 +16,11 @@ Live: https://miogit.300031.xyz
 - An admin pushing to a name that doesn't exist creates the repository
 - Private repositories: hidden and unclonable without a token
 - Console at `/~mio/`: username + password sign-in, token management, repository settings, password change, web editor; behind Cloudflare Access, with the Access JWT re-verified in the Worker
+- Web file operations (console session): create, upload (several files / folder drops, at most 20 MB and 200 files per commit), rename / move, delete — one Git commit each, booked like a push (repository list + GitHub sync); a branch that moved since the page was opened answers 409 instead of being overwritten
+- Settings → Branches: change the default branch, create branches, delete branches (never main or the default branch from the web)
+- Compare `/<repo>/compare/<base>...<head>`: ahead / behind, commits, the diff since the branches split
+- Line anchors `#L12`, `#L10-L20` (Shift-click for ranges), permalinks pinned to the commit SHA, copy file contents, copy buttons on Markdown code blocks
+- Shortcuts: `t` go to file, `/` search, `.` edit, `y` permalink (never while typing or composing)
 - MioUI interface: 中 / EN switch, light / system / dark, mobile-friendly
 - Home page sorted by latest push, or by name; shows owner, last update and main language
 - Repository overview: file list + README, branch / tag counts, GitHub-style language bar

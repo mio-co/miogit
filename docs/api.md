@@ -186,6 +186,15 @@ millis).
 `type` is blob, tree, or commit (a gitlink); `size` on blobs only. 404
 when `path` names a blob or nothing.
 
+### GET /\<repo\>/api/files?h=\<ref\>
+
+Every file path at a ref (the frontend's "t" file finder), sorted, capped
+at 20 000 (`truncated: true` beyond that); submodules are skipped.
+
+```json
+{ "commit": "9e3c2c…", "paths": ["README.md", "src/a.ts"], "truncated": false }
+```
+
 ### GET /\<repo\>/api/blob?h=\<ref\>&path=\<file\>
 
 The raw bytes, not JSON. Content type from the extension with nosniff;
@@ -208,6 +217,60 @@ null for a root commit. `binary` and `toolarge` files carry no hunks.
   }]
 }
 ```
+
+### GET /\<repo\>/api/view/compare/\<base\>...\<head\>
+
+GitHub's three-dot compare (the frontend's `/<repo>/compare/…` page):
+`ahead` / `behind` commit counts, the commits on head that base lacks
+(newest first, 250 at most) and the diff from the merge base to head in
+the commit view's shape. `related: false` when the two share no history
+inside the walk bound (5 000 commits; `capped: true` then means the counts
+are lower bounds) — the diff is base..head then. A missing side is a 404
+with `missing: "base" | "head"`.
+
+## Web writes (console only)
+
+Not served on repository paths: every `/<repo>/~…` sub-path is a 404 on the
+public routes, whatever the credentials. The console proxies them under
+`/~mio/api/r/<repo>/…` behind Cloudflare Access, the console session, the
+`x-csrf-token` header, a JSON body and a same-origin check; tokens cannot
+use them. A successful write is booked exactly like a push: registry
+upsert (list order, page-cache version) and `onPush` with the ref update
+(GitHub sync).
+
+### POST /~mio/api/r/\<repo\>/commit
+
+One commit from a list of changes onto a branch tip:
+
+```json
+{ "branch": "main", "base": "<tip the page was opened at>", "message": "…",
+  "changes": [
+    { "op": "put", "path": "docs/a.md", "content": "…", "encoding": "utf8", "overwrite": false },
+    { "op": "put", "path": "img/logo.png", "content": "<base64>", "encoding": "base64", "overwrite": true },
+    { "op": "delete", "path": "old.txt" },
+    { "op": "move", "from": "a/b.txt", "to": "c/b.txt" } ] }
+```
+
+Paths are validated segment by segment (no empty, `.`, `..`, `.git`,
+backslash or control characters); trees are written in git order and
+directories left empty are pruned. Writes are serialized with pushes.
+Answers `{ commit, parent, branch, tree, paths }`, or an error with a
+`code`: 409 `stale` (the branch moved; `tip` is the new one), 422
+`conflict` / `unchanged`, 404 `missing`, 400 `invalid`, 413 `toolarge`
+(20 MB decoded / 200 files per commit).
+
+### POST /~mio/api/r/\<repo\>/refs
+
+`{ "action": "create", "name", "from" }` (branch, tag or SHA),
+`{ "action": "delete", "name", "expect"? }` (409 when the tip is not
+`expect`), `{ "action": "default", "name" }` (moves HEAD). The default
+branch and `main` are never deletable here; the push policy
+(`src/policy.ts`) is applied to every ref change.
+
+### GET /~mio/api/r/\<repo\>/files?h=\<ref\>
+
+`/api/files` for any repository (private ones included) with the console
+session.
 
 ## RPC
 
