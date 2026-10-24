@@ -6,7 +6,13 @@ const SPA_SUBS = ['/log', '/branches', '/tags', '/commit', '/tag'];
 export function isSpaSub(sub: string): boolean {
   if (sub === '/' || sub === '') return true;
   if (sub === '/tree' || sub.startsWith('/tree/')) return true;
+  if (sub === '/compare' || sub.startsWith('/compare/')) return true;
   return SPA_SUBS.some((p) => sub === p || sub === `${p}/`);
+}
+
+/** console-only form pages on top of isSpaSub (new file, upload); mirrors src/spa.ts isConsoleSpaSub() */
+export function isConsoleSpaSub(sub: string): boolean {
+  return isSpaSub(sub) || /^\/(new|upload)(\/|$)/.test(sub);
 }
 
 /** null = not a frontend page (server-rendered: blame, stats, raw files, archives, the editor …) */
@@ -17,7 +23,7 @@ export function apiFor(pathname: string, search: string): string | null {
   let m = /^\/~mio\/repos\/([^/]+)$/.exec(pathname);
   if (m) return `/~mio/api/repos/${m[1]}`;
   m = /^\/~mio\/r\/([^/]+)(\/.*)$/.exec(pathname);
-  if (m) return isSpaSub(m[2]) ? `/~mio/api/r/${m[1]}/view${m[2]}${search}` : null;
+  if (m) return isConsoleSpaSub(m[2]) ? `/~mio/api/r/${m[1]}/view${m[2]}${search}` : null;
   if (pathname.startsWith('/~') || pathname.startsWith('/api/')) return null;
   m = /^\/([^/]+)(\/.*)?$/.exec(pathname);
   if (m) {
@@ -28,3 +34,10 @@ export function apiFor(pathname: string, search: string): string | null {
 }
 
 export const inConsolePath = (p: string) => p === '/~mio' || p.startsWith('/~mio/');
+
+/** the file-list API behind the "t" finder (public repositories, or any repository in the console) */
+export const filesApi = (base: string, h?: string | null) => {
+  const q = h ? `?h=${encodeURIComponent(h)}` : '';
+  const m = /^\/~mio\/r\/(.+)$/.exec(base);
+  return m ? `/~mio/api/r/${m[1]}/files${q}` : `${base}/api/files${q}`;
+};

@@ -85,3 +85,32 @@ export async function post<T = Record<string, unknown>>(url: string, body: unkno
   }
   return { status: r.status, body: data as T };
 }
+
+/**
+ * JSON POST with upload progress (XMLHttpRequest: fetch has no upload progress).
+ * Same headers and same answers as post().
+ */
+export function postWithProgress<T = Record<string, unknown>>(url: string, body: unknown, csrf: string | undefined, onProgress: (fraction: number) => void, signal?: AbortSignal): Promise<Res<T>> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader('content-type', 'application/json');
+    xhr.setRequestHeader('accept', 'application/json');
+    if (csrf) xhr.setRequestHeader('x-csrf-token', csrf);
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    xhr.onload = () => {
+      let data: unknown;
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch {
+        data = { error: `HTTP ${xhr.status}` };
+      }
+      resolve({ status: xhr.status, body: data as T });
+    };
+    xhr.onerror = () => resolve({ status: 0, body: { error: 'network' } as T });
+    xhr.onabort = () => resolve({ status: 0, body: { error: 'aborted' } as T });
+    signal?.addEventListener('abort', () => xhr.abort());
+    xhr.send(JSON.stringify(body ?? {}));
+  });
+}

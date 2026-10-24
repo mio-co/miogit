@@ -6,7 +6,8 @@
 // switch (MioUI SettingRow + Switch) sits under the general form and saves on its own.
 import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate, useRevalidator, useSearchParams } from 'react-router';
-import { Globe, SlidersHorizontal, Warning } from '@phosphor-icons/react';
+import { GitBranch, Globe, SlidersHorizontal, Warning } from '@phosphor-icons/react';
+import { BranchSettings } from './branch-settings';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/card';
@@ -26,16 +27,18 @@ import { repoPath } from '@/app/format';
 import { AppLink } from '@/app/link';
 import { cn } from '@/lib/cn';
 
-type Section = 'general' | 'visibility' | 'danger';
+type Section = 'general' | 'visibility' | 'branches' | 'danger';
 
 export function SettingsView({ info }: { info: RepoSettings }) {
   const { t } = useI18n();
   const [sp] = useSearchParams();
-  const s: Section = sp.get('s') === 'visibility' ? 'visibility' : sp.get('s') === 'danger' ? 'danger' : 'general';
+  const raw = sp.get('s');
+  const s: Section = raw === 'visibility' || raw === 'danger' || raw === 'branches' ? raw : 'general';
   const href = `/~mio/repos/${repoPath(info.name)}`;
   const items: [Section, React.ReactNode, string][] = [
     ['general', <SlidersHorizontal key="g" />, t('General', '常规')],
     ['visibility', <Globe key="v" />, t('Visibility', '可见性')],
+    ['branches', <GitBranch key="b" />, t('Branches', '分支')],
     ['danger', <Warning key="d" />, t('Danger zone', '危险区')],
   ];
   return (
@@ -65,7 +68,7 @@ export function SettingsView({ info }: { info: RepoSettings }) {
         </div>
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="rounded-2xl bg-surface-2 p-6 shadow-cds-sm @max-[480px]/page:p-4">
-            {s === 'general' ? <General info={info} /> : s === 'visibility' ? <Visibility info={info} /> : <Danger info={info} />}
+            {s === 'general' ? <General info={info} /> : s === 'visibility' ? <Visibility info={info} /> : s === 'branches' ? <BranchSettings repo={info.name} /> : <Danger info={info} />}
           </div>
         </div>
       </div>

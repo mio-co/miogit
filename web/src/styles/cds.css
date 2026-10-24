@@ -260,8 +260,14 @@
   --cds-focus-shadow: inset 0 0 0 1px var(--cds-surface-1), 0 0 0 1.5px var(--cds-focus-ring), var(--cds-focus-glow);
   --cds-focus-shadow-danger: inset 0 0 0 1px var(--cds-surface-1), 0 0 0 1.5px var(--cds-fill-danger),
     0 0 6px 1px color-mix(in srgb, var(--cds-fill-danger) 25%, transparent);
+  /* 拖入高亮（spec §3.5 --cds-shadow-drop-glow；陶土换成主题强调色，跟随主题） */
+  --cds-shadow-drop-glow: inset 0 0 24px -2px color-mix(in srgb, var(--cds-accent) 20%, transparent), inset 0 0 0 2px var(--cds-accent);
+  /* 代码行选中（#L10-L20）：强调色浅底，明暗各自派生 */
+  --cds-line-selected: color-mix(in srgb, var(--cds-accent) 12%, transparent);
 }
 .dark {
+  --cds-shadow-drop-glow: inset 0 0 24px -2px color-mix(in srgb, var(--cds-accent) 30%, transparent), inset 0 0 0 2px var(--cds-accent);
+  --cds-line-selected: color-mix(in srgb, var(--cds-accent) 18%, transparent);
   --cds-accent-hover: color-mix(in oklab, var(--cds-accent) 86%, white);
   --cds-accent-soft: color-mix(in oklab, var(--cds-accent) 16%, var(--cds-surface-1));
   --cds-accent-text: color-mix(in oklab, var(--cds-accent) 82%, white);

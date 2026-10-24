@@ -31,8 +31,23 @@ export type View =
       langs: { name: string; color: string; pct: number }[];
       bytes: number;
     }
-  | { kind: 'tree'; meta: Meta; path: string[]; entries: Entry[] }
-  | { kind: 'blob'; meta: Meta; path: string[]; size: number; binary: boolean; lineCount: number; image?: boolean; html?: string; lines?: string[] }
+  | { kind: 'tree'; meta: Meta; path: string[]; entries: Entry[]; commit: string; branch: string | null }
+  | {
+      kind: 'blob';
+      meta: Meta;
+      path: string[];
+      size: number;
+      binary: boolean;
+      lineCount: number;
+      image?: boolean;
+      html?: string;
+      lines?: string[];
+      /** blob oid / mode, the commit the ref resolved to (permalinks) and the branch a web commit would go onto */
+      oid: string;
+      mode: string;
+      commit: string;
+      branch: string | null;
+    }
   | { kind: 'log'; meta: Meta; ofs: number; pageSize: number; more: boolean; filter: { qt: string; q: string; path: string }; commits: (Brief & { deco: Deco[] })[] }
   | { kind: 'branches'; meta: Meta; items: { name: string; isDefault: boolean; commit: Brief | null }[] }
   | { kind: 'tags'; meta: Meta; items: { name: string; when: number; commit: Brief | null }[] }
@@ -49,7 +64,32 @@ export type View =
       truncated: boolean;
       files: { path: string; status: 'added' | 'deleted' | 'mode' | 'modified'; oldMode: string | null; newMode: string | null; kind: 'text' | 'binary' | 'toolarge'; add: number; del: number; hunks: Hunk[] }[];
     }
+  | CompareView
   | { kind: 'tag'; meta: Meta; name: string; annotated: boolean; tagger?: Person | null; message?: string; commit: Brief; snapName: string };
+
+export type DiffFile = { path: string; status: 'added' | 'deleted' | 'mode' | 'modified'; oldMode: string | null; newMode: string | null; kind: 'text' | 'binary' | 'toolarge'; add: number; del: number; hunks: Hunk[] };
+
+/** /compare/<base>...<head> (src/repo.ts view): ready=false until both sides resolve */
+export interface CompareView {
+  kind: 'compare';
+  meta: Meta;
+  base: string;
+  head: string | null;
+  ready: boolean;
+  error?: string;
+  missing?: 'base' | 'head';
+  baseOid?: string;
+  headOid?: string;
+  mergeBase?: string | null;
+  related?: boolean;
+  ahead?: number;
+  behind?: number;
+  capped?: boolean;
+  commits?: (Brief & { deco: Deco[] })[];
+  moreCommits?: boolean;
+  truncated?: boolean;
+  files?: DiffFile[];
+}
 
 export interface RepoItem { name: string; description: string; owner: string; section: string; idle: number; private: boolean; lang: string; langColor?: string; bytes?: number }
 export interface Storage {

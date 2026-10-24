@@ -2,7 +2,8 @@
 // The frame stays mounted while you move between Code / Commits / Branches, so the
 // tab indicator slides (MioUI Tabs, motion layoutId) and only the content below swaps.
 import { BookBookmark, Code, ClockCounterClockwise, GearSix, GitBranch } from '@phosphor-icons/react';
-import { useLoaderData, useLocation, useParams, useSearchParams } from 'react-router';
+import { useState } from 'react';
+import { useLoaderData, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 import { Badge } from '@/components/ui/card';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { Res } from '@/app/api';
@@ -13,11 +14,17 @@ import { AppLink } from '@/app/link';
 import { repoPath } from '@/app/format';
 import { BlobView, CommitView, EmptyRepoView, ErrorView, LogView, RefsView, SummaryView, TagView, TreeView, type RepoCtx } from './repo-views';
 import { SettingsView } from './settings-view';
+import { CompareView } from './compare-view';
+import { FileFinder } from './file-finder';
+import { NewFileView, UploadView } from './file-ops';
+import { useHotkeys } from '@/app/hotkeys';
+import { useSession } from '@/app/session';
+import { encPath } from '@/app/format';
 
 function tabOf(splat: string): 'code' | 'log' | 'branches' {
   const first = splat.split('/')[0];
   if (first === 'log' || first === 'commit') return 'log';
-  if (first === 'branches' || first === 'tags' || first === 'tag') return 'branches';
+  if (first === 'branches' || first === 'tags' || first === 'tag' || first === 'compare') return 'branches';
   return 'code';
 }
 
@@ -76,16 +83,44 @@ export function RepoFrame({ consoleMode }: { consoleMode: boolean }) {
   const meta = v.meta ?? null;
   const base = consoleMode ? `/~mio/r/${repoPath(repo)}` : `/${repoPath(repo)}`;
   const h = sp.get('h');
+  const { session } = useSession();
+  const nav = useNavigate();
+  const [finder, setFinder] = useState(false);
+  const mayWrite = consoleMode || boot.signed;
   const c: RepoCtx | null = meta
-    ? { base, repo, meta, editBase: consoleMode || boot.signed ? `/~mio/edit/${repoPath(repo)}` : null }
+    ? {
+        base,
+        repo,
+        meta,
+        editBase: mayWrite ? `/~mio/edit/${repoPath(repo)}` : null,
+        consoleBase: mayWrite ? `/~mio/r/${repoPath(repo)}` : null,
+        canWrite: consoleMode && !!session,
+      }
     : null;
+  const first = splat.split('/')[0];
+  // t: go to file · /: the page's search box, else the file finder (never while typing / composing)
+  useHotkeys({
+    t: meta ? () => setFinder(true) : null,
+    '/': meta
+      ? () => {
+          const el = document.querySelector<HTMLInputElement>('[data-hotkey-search]');
+          if (el) {
+            el.focus();
+            el.select();
+          } else setFinder(true);
+        }
+      : null,
+  });
   let body: React.ReactNode;
   if (v.kind === 'error' || !c) {
     // no meta = the repository itself is missing (or unreachable): back to the list, not into the missing repo
     const err = v.kind === 'error' ? v.error : ((res?.body as { error?: string } | undefined)?.error ?? 'error');
     const back = meta ? { href: `${base}/`, label: t('Back to repository', '返回仓库') } : { href: consoleMode ? '/~mio/' : '/', label: t('All repositories', '全部仓库') };
     body = <ErrorView status={res?.status ?? 404} error={err} back={back} />;
-  } else if (v.kind === 'summary') body = <SummaryView v={v} c={c} />;
+  } else if (v.kind === 'tree' && (first === 'new' || first === 'upload')) {
+    body = !consoleMode || !session ? <ErrorView status={403} error={t('Sign in to the console to change files.', '登录管理台后才能修改文件。')} back={{ href: `${base}/`, label: t('Back to repository', '返回仓库') }} /> : first === 'new' ? <NewFileView v={v} c={c} h={h} /> : <UploadView v={v} c={c} h={h} />;
+  } else if (v.kind === 'compare') body = <CompareView v={v} c={c} />;
+  else if (v.kind === 'summary') body = <SummaryView v={v} c={c} />;
   else if (v.kind === 'empty') body = <EmptyRepoView v={v} />;
   else if (v.kind === 'tree') body = <TreeView v={v} c={c} h={h} />;
   else if (v.kind === 'blob') body = <BlobView v={v} c={c} h={h} />;
@@ -101,6 +136,7 @@ export function RepoFrame({ consoleMode }: { consoleMode: boolean }) {
       <div key={loc.pathname + loc.search} className="mio-page-in min-w-0">
         {body}
       </div>
+      {meta && <FileFinder open={finder} onOpenChange={setFinder} base={base} h={h} onPick={(p) => nav(`${base}/tree/${encPath(p.split('/'))}${h ? `?h=${encodeURIComponent(h)}` : ''}`)} />}
     </div>
   );
 }

@@ -19,9 +19,11 @@ import {
   GitBranch,
   GitCommit,
   GitDiff,
+  GitPullRequest,
   ClockCounterClockwise,
   Image as ImageIcon,
   Link as LinkIcon,
+  LinkSimple,
   PencilSimple,
   Tag as TagIcon,
   Warning,
@@ -32,7 +34,9 @@ import { Button, ButtonGroup, IconButton, LinkButton } from '@/components/ui/but
 import { Badge, Card } from '@/components/ui/card';
 import { Breadcrumb } from '@/components/ui/breadcrumb';
 import { CopyButton } from '@/components/ui/copy-button';
-import { CopyField, SearchInput } from '@/components/ui/input';
+import { CopyField, Kbd, SearchInput, copyText } from '@/components/ui/input';
+import { toast } from '@/components/ui/toast';
+import { useHotkeys } from '@/app/hotkeys';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { DropdownMenu, DropdownMenuItem, DropdownMenuLabel } from '@/components/ui/dropdown-menu';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -44,6 +48,9 @@ import { age, day, encPath, fmtBytes, isoUtc } from '@/app/format';
 import { AppLink } from '@/app/link';
 import { cn } from '@/lib/cn';
 import { StaggerItem } from './stagger';
+import { CodeLines, MarkdownBody, linesText } from './code-view';
+import { AddFileMenu, FileMenu } from './file-ops';
+import type { DiffFile } from '@/app/types';
 
 export interface RepoCtx {
   /** "/<repo>" or "/~mio/r/<repo>" */
@@ -52,10 +59,14 @@ export interface RepoCtx {
   meta: Meta;
   /** where the console editor lives, when the visitor may use it */
   editBase: string | null;
+  /** the console copy of this repository (/~mio/r/<repo>) when the visitor may write; null otherwise */
+  consoleBase: string | null;
+  /** a console session is active on this page: write dialogs open in place */
+  canWrite: boolean;
 }
 
-const rowCls = 'shadow-[inset_0_var(--cds-ring-hairline)_0_var(--cds-border)] first:shadow-none';
-const cardHead = 'flex min-h-11 flex-wrap items-center gap-2 bg-surface-1 px-4 py-2 text-body shadow-[inset_0_calc(-1*var(--cds-ring-hairline))_0_var(--cds-border)]';
+export const rowCls = 'shadow-[inset_0_var(--cds-ring-hairline)_0_var(--cds-border)] first:shadow-none';
+export const cardHead = 'flex min-h-11 flex-wrap items-center gap-2 bg-surface-1 px-4 py-2 text-body shadow-[inset_0_calc(-1*var(--cds-ring-hairline))_0_var(--cds-border)]';
 
 function q(h?: string | null) {
   return h ? `?h=${encodeURIComponent(h)}` : '';
@@ -83,7 +94,9 @@ export function BranchMenu({ c, target }: { c: RepoCtx; target: string }) {
       className="max-h-80 w-64 overflow-y-auto"
       trigger={
         <Button variant="secondary" size="sm" startIcon={<GitBranch />} endIcon={<CaretDown className="opacity-60" />} title={t('Switch branch', '切换分支')}>
-          <span className="max-w-40 truncate font-mono text-[12.5px]">{c.meta.ref}</span>
+          <span className="max-w-40 truncate font-mono text-[12.5px]" title={c.meta.ref}>
+            {/^[0-9a-f]{40}$/.test(c.meta.ref) ? c.meta.ref.slice(0, 7) : c.meta.ref}
+          </span>
         </Button>
       }
     >
@@ -114,7 +127,7 @@ function Bar({ children }: { children: ReactNode }) {
   return <div className="flex min-w-0 flex-wrap items-center gap-2">{children}</div>;
 }
 
-function DecoBadges({ deco, c }: { deco: Deco[]; c: RepoCtx }) {
+export function DecoBadges({ deco, c }: { deco: Deco[]; c: RepoCtx }) {
   if (!deco.length) return null;
   return (
     <>
@@ -193,6 +206,9 @@ export function SummaryView({ v, c }: { v: Extract<View, { kind: 'summary' }>; c
           <CountLink href={`${c.base}/branches/`} icon={<GitBranch />} n={m.nBranches} label={t(m.nBranches === 1 ? 'branch' : 'branches', '个分支')} />
           <CountLink href={`${c.base}/tags/`} icon={<TagIcon />} n={m.nTags} label={t(m.nTags === 1 ? 'tag' : 'tags', '个标签')} />
           <CountLink href={`${c.base}/log/`} icon={<ClockCounterClockwise />} n={v.commits} label={t(nCommits === 1 ? 'commit' : 'commits', '次提交')} />
+          <span className="ms-auto">
+            <AddFileMenu c={c} dir={[]} branch={m.head || null} />
+          </span>
         </Bar>
         <Card className="overflow-hidden">
           {v.last && (
@@ -282,8 +298,7 @@ function ReadmeCard({ r }: { r: { name: string; html?: string; text?: string } }
         <span className="font-medium">README</span>
       </div>
       {r.html != null ? (
-        // server-rendered + sanitized (src/ui/markdown.ts); the page CSP is the backstop
-        <div className="md" dangerouslySetInnerHTML={{ __html: r.html }} />
+        <MarkdownBody html={r.html} />
       ) : (
         <pre className="m-0 p-4 font-mono text-[12.5px] whitespace-pre-wrap wrap-anywhere-cjk">{r.text}</pre>
       )}
@@ -312,7 +327,7 @@ export function EmptyRepoView({ v }: { v: Extract<View, { kind: 'empty' }> }) {
 // ---------------------------------------------------------------------------
 // tree / blob
 // ---------------------------------------------------------------------------
-function PathBar({ c, path, h }: { c: RepoCtx; path: string[]; h?: string | null }) {
+export function PathBar({ c, path, h }: { c: RepoCtx; path: string[]; h?: string | null }) {
   const { t } = useI18n();
   const items = [{ label: c.repo.split('/').pop() ?? c.repo, href: `${c.base}/tree/${q(h)}` }];
   path.forEach((seg, i) => items.push({ label: seg, href: `${c.base}/tree/${encPath(path.slice(0, i + 1))}${q(h)}` }));
@@ -330,6 +345,8 @@ function PathBar({ c, path, h }: { c: RepoCtx; path: string[]; h?: string | null
 export function TreeView({ v, c, h }: { v: Extract<View, { kind: 'tree' }>; c: RepoCtx; h?: string | null }) {
   const { t } = useI18n();
   const historyHref = `${c.base}/log/?${new URLSearchParams({ ...(h ? { h } : {}), ...(v.path.length ? { path: v.path.join('/') } : {}) }).toString()}`.replace(/\?$/, '');
+  const perma = usePermalink(c, v.path, v.commit, h);
+  useHotkeys({ y: perma.go });
   return (
     <div className="flex flex-col gap-4">
       <Bar>
@@ -339,14 +356,34 @@ export function TreeView({ v, c, h }: { v: Extract<View, { kind: 'tree' }>; c: R
       <Card className="overflow-hidden">
         <div className={cardHead}>
           <span className="text-text-secondary tabular-nums">{t(`${v.entries.length} item${v.entries.length === 1 ? '' : 's'}`, `${v.entries.length} 项`)}</span>
-          <Button asChild variant="ghost" size="xs" startIcon={<ClockCounterClockwise />} className="ms-auto">
-            <AppLink href={historyHref}>{t('History', '历史')}</AppLink>
-          </Button>
+          <span className="ms-auto flex items-center gap-1">
+            <Button asChild variant="ghost" size="xs" startIcon={<ClockCounterClockwise />}>
+              <AppLink href={historyHref}>{t('History', '历史')}</AppLink>
+            </Button>
+            <AddFileMenu c={c} dir={v.path} h={h} branch={v.branch} />
+          </span>
         </div>
         <FileRows c={c} prefix={v.path} entries={v.entries} h={h} up={v.path.length ? `${c.base}/tree/${encPath(v.path.slice(0, -1))}${q(h)}` : undefined} />
       </Card>
     </div>
   );
+}
+
+/** the same page pinned to the commit the ref resolved to (GitHub's permalink / the "y" key) */
+export function usePermalink(c: RepoCtx, path: string[], commit: string, h?: string | null) {
+  const { t } = useI18n();
+  const nav = useNavigate();
+  const href = `${c.base}/tree/${encPath(path)}?h=${commit}`;
+  const go = () => {
+    const target = href + location.hash;
+    const abs = new URL(target, location.href).toString();
+    void copyText(abs).then(
+      () => toast.success(t('Permalink copied', '已复制永久链接'), { description: t(`Pinned to commit ${commit.slice(0, 7)}`, `固定到提交 ${commit.slice(0, 7)}`) }),
+      () => toast.info(t(`Pinned to commit ${commit.slice(0, 7)}`, `已固定到提交 ${commit.slice(0, 7)}`)),
+    );
+    if (h !== commit) nav(target, { replace: true });
+  };
+  return { href, go };
 }
 
 export function BlobView({ v, c, h }: { v: Extract<View, { kind: 'blob' }>; c: RepoCtx; h?: string | null }) {
@@ -355,6 +392,12 @@ export function BlobView({ v, c, h }: { v: Extract<View, { kind: 'blob' }>; c: R
   const name = v.path[v.path.length - 1] ?? '';
   const plain = `${c.base}/plain/${href}${q(h)}`;
   const historyHref = `${c.base}/log/?${h ? `h=${encodeURIComponent(h)}&` : ''}path=${href}`;
+  const perma = usePermalink(c, v.path, v.commit, h);
+  const editHref = !v.binary && c.editBase && v.branch ? `${c.editBase}/${href}${q(h)}` : null;
+  useHotkeys({
+    y: perma.go,
+    '.': editHref ? () => location.assign(editHref) : null,
+  });
   let inner: ReactNode;
   if (v.image) {
     inner = (
@@ -377,35 +420,16 @@ export function BlobView({ v, c, h }: { v: Extract<View, { kind: 'blob' }>; c: R
       />
     );
   } else if (v.html != null) {
-    inner = <div className="md" dangerouslySetInnerHTML={{ __html: v.html }} />;
+    inner = <MarkdownBody html={v.html} />;
   } else {
-    const lines = v.lines ?? [];
-    inner = (
-      <div className="overflow-x-auto" data-cds-scroll-fade="horizontal">
-        <table className="blob">
-          <tbody>
-            <tr>
-              <td className="linenumbers">
-                <pre>
-                  {lines.map((_, i) => (
-                    <a key={i} id={`n${i + 1}`} href={`#n${i + 1}`}>
-                      {i + 1}
-                    </a>
-                  ))}
-                </pre>
-              </td>
-              <td className="lines">
-                {/* highlighted server-side (src/ui/highlight.ts escapes every token) */}
-                <pre>
-                  <code dangerouslySetInnerHTML={{ __html: lines.map((l) => l || ' ').join('\n') }} />
-                </pre>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    );
+    inner = <CodeLines lines={v.lines ?? []} />;
   }
+  const rawText = async () => {
+    if (v.lines) return linesText(v.lines);
+    const r = await fetch(plain, { credentials: 'same-origin' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.text();
+  };
   return (
     <div className="flex flex-col gap-4">
       <Bar>
@@ -423,7 +447,7 @@ export function BlobView({ v, c, h }: { v: Extract<View, { kind: 'blob' }>; c: R
             )}
             {fmtBytes(v.size)}
           </span>
-          <div className="ms-auto flex items-center gap-1">
+          <div className="ms-auto flex flex-wrap items-center justify-end gap-1">
             <ButtonGroup attached>
               <LinkButton href={plain} size="xs">
                 {t('Raw', '原始')}
@@ -437,14 +461,19 @@ export function BlobView({ v, c, h }: { v: Extract<View, { kind: 'blob' }>; c: R
                 <AppLink href={historyHref}>{t('History', '历史')}</AppLink>
               </Button>
             </ButtonGroup>
+            {!v.binary && <CopyButton value={rawText} size="xs" variant="ghost" labels={{ copy: t('Copy file contents', '复制文件内容'), copied: t('Copied', '已复制'), failed: t('Copy failed', '复制失败') }} />}
+            <Button variant="ghost" size="xs" icon onClick={perma.go} aria-label={t('Copy permalink (y)', '复制永久链接（y）')} title={t('Copy permalink (y)', '复制永久链接（y）')}>
+              <LinkSimple />
+            </Button>
             <LinkButton href={plain} download={name} variant="ghost" size="xs" icon aria-label={t('Download', '下载')} title={t('Download', '下载')}>
               <DownloadSimple />
             </LinkButton>
-            {!v.binary && c.editBase && (
-              <LinkButton href={`${c.editBase}/${href}${q(h)}`} variant="ghost" size="xs" icon rel="nofollow" aria-label={t('Edit', '编辑')} title={t('Edit', '编辑')}>
+            {editHref && (
+              <LinkButton href={editHref} variant="ghost" size="xs" icon rel="nofollow" aria-label={t('Edit (.)', '编辑（.）')} title={t('Edit (.)', '编辑（.）')}>
                 <PencilSimple />
               </LinkButton>
             )}
+            <FileMenu v={v} c={c} h={h} onPermalink={perma.go} />
           </div>
         </div>
         {inner}
@@ -503,7 +532,17 @@ export function LogView({ v, c, h }: { v: Extract<View, { kind: 'log' }>; c: Rep
             { value: 'range', label: t('Range', '范围') },
           ]}
         />
-        <SearchInput value={qq} onValueChange={setQq} onSearch={() => search()} hotkey={false} placeholder={t('Search commits', '搜索提交')} aria-label={t('Search commits', '搜索提交')} className="min-w-40 flex-1" />
+        <SearchInput
+          value={qq}
+          onValueChange={setQq}
+          onSearch={() => search()}
+          hotkey={false}
+          data-hotkey-search=""
+          suffix={qq ? null : <Kbd aria-hidden className="me-1">/</Kbd>}
+          placeholder={t('Search commits', '搜索提交')}
+          aria-label={t('Search commits (/)', '搜索提交（/）')}
+          className="min-w-40 flex-1"
+        />
         <Button type="submit">{t('Search', '搜索')}</Button>
       </form>
       {v.filter.path && (
@@ -566,7 +605,7 @@ export function LogView({ v, c, h }: { v: Extract<View, { kind: 'log' }>; c: Rep
   );
 }
 
-function BrowseButton({ href }: { href: string }) {
+export function BrowseButton({ href }: { href: string }) {
   const { t } = useI18n();
   return (
     <Button asChild variant="ghost" size="xs" icon aria-label={t('Browse the repository at this commit', '浏览此版本的文件')} title={t('Browse the repository at this commit', '浏览此版本的文件')}>
@@ -662,6 +701,11 @@ export function RefsView({ v, c }: { v: Extract<View, { kind: 'branches' | 'tags
             <Badge variant="neutral" mono>
               {count}
             </Badge>
+            {kind === 'branches' && count > 1 && (
+              <Button asChild variant="ghost" size="xs" startIcon={<GitPullRequest />} className="ms-auto">
+                <AppLink href={`${c.base}/compare/`}>{t('Compare', '比较')}</AppLink>
+              </Button>
+            )}
           </div>
           <ul>
             {kind === 'branches'
@@ -678,6 +722,13 @@ export function RefsView({ v, c }: { v: Extract<View, { kind: 'branches' | 'tags
                       <div className="mt-0.5 text-footnote text-text-secondary">{commitLine(b.commit)}</div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
+                      {!b.isDefault && v.meta.head && (
+                        <Button asChild variant="ghost" size="xs" startIcon={<GitPullRequest />}>
+                          <AppLink href={`${c.base}/compare/${encPath(v.meta.head.split('/'))}...${encPath(b.name.split('/'))}`} title={t(`Compare ${b.name} with ${v.meta.head}`, `比较 ${b.name} 与 ${v.meta.head}`)}>
+                            {t('Compare', '比较')}
+                          </AppLink>
+                        </Button>
+                      )}
                       <Button asChild variant="ghost" size="xs" startIcon={<ClockCounterClockwise />}>
                         <AppLink href={`${c.base}/log/?h=${encodeURIComponent(b.name)}`}>{t('Commits', '提交')}</AppLink>
                       </Button>
@@ -706,7 +757,7 @@ export function RefsView({ v, c }: { v: Extract<View, { kind: 'branches' | 'tags
 // ---------------------------------------------------------------------------
 // commit detail + diff
 // ---------------------------------------------------------------------------
-function HunkRows({ hk }: { hk: Hunk }) {
+export function HunkRows({ hk }: { hk: Hunk }) {
   let a = hk.aStart;
   let b = hk.bStart;
   return (
@@ -810,6 +861,17 @@ export function CommitView({ v, c }: { v: Extract<View, { kind: 'commit' }>; c: 
           </LinkButton>
         </span>
       </div>
+      <DiffFileList files={v.files} />
+    </div>
+  );
+}
+
+/** the per-file collapsible diffs (commit page, compare page) */
+export function DiffFileList({ files }: { files: DiffFile[] }) {
+  const { t } = useI18n();
+  const v = { files };
+  return (
+    <>
       {v.files.length === 0 ? (
         <EmptyState icon={<GitDiff />} title={t('No changes', '没有变更')} />
       ) : (
@@ -852,7 +914,7 @@ export function CommitView({ v, c }: { v: Extract<View, { kind: 'commit' }>; c: 
           </Collapsible>
         ))
       )}
-    </div>
+    </>
   );
 }
 

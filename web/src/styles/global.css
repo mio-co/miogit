@@ -264,6 +264,21 @@ td.linenumbers pre { padding: 12px 12px 12px 16px; color: var(--cds-text-placeho
 td.linenumbers a { color: inherit; display: block; }
 td.linenumbers a:hover { color: var(--cds-accent-text); }
 td.linenumbers a:target { color: var(--cds-accent-text); font-weight: 600; }
+/* line anchors (#L12, #L10-L20): selected numbers + a band behind the code; below the 56px sticky top bar */
+td.linenumbers a { scroll-margin-top: 72px; scroll-margin-bottom: 24px; border-radius: 4px; padding-inline: 4px; margin-inline: -4px; }
+td.linenumbers a:focus-visible { outline: none; box-shadow: var(--cds-focus-shadow); }
+td.linenumbers a.is-sel { color: var(--cds-accent-text); background: var(--cds-line-selected); font-weight: 600; }
+td.lines { position: relative; }
+.line-sel { position: absolute; inset-inline: 0; pointer-events: none; background: var(--cds-line-selected); box-shadow: inset 2px 0 0 var(--cds-accent); }
+td.lines pre { position: relative; }
+/* Markdown code blocks: a copy button in the corner (shown on hover / focus; always on touch screens) */
+.md .md-pre { position: relative; margin: 0 0 16px; }
+.md .md-pre > pre { margin: 0; }
+.md .md-copy { position: absolute; top: 6px; inset-inline-end: 6px; opacity: 0; transition: opacity var(--cds-dur-base) var(--cds-ease-swift); }
+.md .md-pre:hover .md-copy, .md .md-copy:focus-within { opacity: 1; }
+@media (pointer: coarse) { .md .md-copy { opacity: 1; } }
+html:not(.dark) .md .md-copy { background: var(--cds-surface-1); border-radius: 6px; }
+.dark .md .md-copy { background: var(--cds-code-bg); border-radius: 6px; }
 
 /* diff 行（MioUI DiffViewer 同款配色：success / danger 10% 淡底，行号 tabular） */
 table.df { font-family: var(--font-anthropic-mono); font-size: 12.5px; line-height: 1.65; width: 100%; border-collapse: collapse; }
