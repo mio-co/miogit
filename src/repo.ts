@@ -40,6 +40,7 @@ import { ICON_BOOK_OPEN, ICON_CARET_DOWN, ICON_CARET_LEFT, ICON_CARET_RIGHT, ICO
 import { renderMarkdown } from "./ui/markdown";
 import { prePushReasons, postPushReason, atomicReasons, isRole, ZERO_OID as POLICY_ZERO, type Principal } from "./policy";
 import { highlightLines } from "./ui/highlight";
+import { applyChanges, badBranchName, EditError, type Change } from "./git/tree-edit";
 
 const LOG_PAGE = 50;
 const MAX_DIFF_FILES = 100;
@@ -255,6 +256,15 @@ export class RepoCell extends DurableObject<Env> {
 
       if (path === "/edit" && req.method === "POST") {
         return this.editCommit(req, repo);
+      }
+      // console-only writes (the Worker 404s every "/~…" sub-path on repository
+      // routes; only src/admin.ts reaches these, stamping role admin + token "console")
+      if (path.startsWith("/~write/")) {
+        const p = principalOf(req);
+        if (req.method !== "POST" || p.role !== "admin" || p.id !== "console") return Response.json({ error: "forbidden" }, { status: 403 });
+        if (path === "/~write/commit") return this.serialized(() => this.webCommit(req));
+        if (path === "/~write/refs") return this.serialized(() => this.webRefs(req, p));
+        return Response.json({ error: "not found" }, { status: 404 });
       }
       if (path.startsWith("/edit/") && req.method === "GET") {
         return this.editPage(repo, url.searchParams.get("h") ?? undefined, decodePath(path.slice("/edit".length)));
@@ -536,6 +546,74 @@ export class RepoCell extends DurableObject<Env> {
     return { oid: found.oid, entries };
   }
 
+  private fileListMemo = new Map<string, { paths: string[]; truncated: boolean }>();
+  /** Every file path at a ref (the "t" file finder), capped at MAX_FILE_LIST; memoized per tree (immutable). */
+  async listFiles(ref?: string): Promise<{ commit: string; paths: string[]; truncated: boolean } | null> {
+    this.rpcBind();
+    const rr = await this.resolveRef(ref);
+    if (!rr) return null;
+    const head = await this.peelToCommit(rr.oid);
+    if (!head) return null;
+    let hit = this.fileListMemo.get(head.commit.tree);
+    if (!hit) {
+      const paths: string[] = [];
+      let truncated = false;
+      const stack: [string, string][] = [[head.commit.tree, ""]];
+      while (stack.length && !truncated) {
+        const [oid, prefix] = stack.pop()!;
+        const obj = await this.store.get(oid);
+        if (obj?.type !== "tree") continue;
+        const subdirs: [string, string][] = [];
+        for (const e of parseTree(obj.data)) {
+          const p = prefix ? `${prefix}/${e.name}` : e.name;
+          if (isTreeMode(e.mode)) subdirs.push([e.oid, p]);
+          else if (!isGitlinkMode(e.mode)) {
+            if (paths.length >= MAX_FILE_LIST) {
+              truncated = true;
+              break;
+            }
+            paths.push(p);
+          }
+        }
+        for (let i = subdirs.length - 1; i >= 0; i--) stack.push(subdirs[i]);
+      }
+      paths.sort();
+      hit = { paths, truncated };
+      if (this.fileListMemo.size >= 4) this.fileListMemo.delete(this.fileListMemo.keys().next().value!);
+      this.fileListMemo.set(head.commit.tree, hit);
+    }
+    return { commit: head.oid, ...hit };
+  }
+
+  /**
+   * Commits reachable from `tip`, newest committer date first, bounded. The
+   * order matters for the merge base (the first commit of one walk the other
+   * walk contains).
+   */
+  private async ancestry(tip: string, cap: number): Promise<{ order: { oid: string; commit: Commit }[]; set: Set<string>; capped: boolean }> {
+    const order: { oid: string; commit: Commit }[] = [];
+    const set = new Set<string>();
+    const frontier: { oid: string; commit: Commit }[] = [];
+    const queued = new Set<string>();
+    const push = async (oid: string) => {
+      if (queued.has(oid)) return;
+      queued.add(oid);
+      const commit = await this.loadCommit(oid);
+      if (commit) frontier.push({ oid, commit });
+    };
+    await push(tip);
+    while (frontier.length) {
+      if (order.length >= cap) return { order, set, capped: true };
+      let best = 0;
+      for (let i = 1; i < frontier.length; i++) if (frontier[i].commit.committer.time > frontier[best].commit.committer.time) best = i;
+      const next = frontier.splice(best, 1)[0];
+      order.push(next);
+      set.add(next.oid);
+      for (const p of next.commit.parents) await push(p);
+    }
+    return { order, set, capped: false };
+  }
+
   /** Changes id2..id (default id2 = first parent of id, like the diff page). */
   async readDiff(id?: string, id2?: string): Promise<DiffResult | null> {
     this.rpcBind();
@@ -586,6 +664,10 @@ export class RepoCell extends DurableObject<Env> {
     }
     const notFound = (what: string) => json({ error: what }, 404);
     if (path === "/api/refs") return json(await this.listRefs());
+    if (path === "/api/files") {
+      const f = await this.listFiles(h);
+      return f ? json(f) : notFound(h ? `bad ref: ${h}` : "empty repository");
+    }
     if (path === "/api/log") {
       return json(
         await this.listLog(h, {
@@ -1029,16 +1111,22 @@ export class RepoCell extends DurableObject<Env> {
       });
     }
 
-    if (path.startsWith("/tree")) {
-      const segs = decodePath(path.slice("/tree".length));
+    // /new/<dir> and /upload/<dir> (console pages) are the directory's tree view: the
+    // form needs the branch tip it will commit onto and the names already there
+    const dirAlias = /^\/(new|upload)(\/.*)?$/.exec(path);
+    if (path.startsWith("/tree") || dirAlias) {
+      const segs = decodePath(dirAlias ? dirAlias[2] ?? "/" : path.slice("/tree".length));
       const meta = this.viewMeta(repo, h);
       const rr = await this.resolveRef(h);
       if (!rr) return fail(404, h ? `bad ref: ${h}` : "empty repository");
       const head = await this.peelToCommit(rr.oid);
       if (!head) return fail(404, "no commit found");
+      // what a permalink pins to, and the branch a web commit would go onto (null for a tag / SHA)
+      const pin = { commit: head.oid, branch: rr.refName?.startsWith("refs/heads/") && rr.oid === head.oid ? rr.refName.slice(11) : null };
       const found = await this.lookupPath(head.commit.tree, segs);
       if (!found) return fail(404, `path not found: ${segs.join("/")}`);
-      if (found.kind === "tree") return ok({ kind: "tree", meta, path: segs, entries: this.viewEntries(found.entries) });
+      if (dirAlias && found.kind !== "tree") return fail(404, `not a directory: ${segs.join("/")}`);
+      if (found.kind === "tree") return ok({ kind: "tree", meta, path: segs, entries: this.viewEntries(found.entries), ...pin });
       const obj = await this.store.get(found.entry.oid);
       if (!obj) return fail(404, "missing blob");
       const name = segs[segs.length - 1] ?? "";
@@ -1046,7 +1134,7 @@ export class RepoCell extends DurableObject<Env> {
       const binary = isBinary(obj.data);
       const text = binary ? "" : td.decode(obj.data);
       const lineCount = text ? text.split("\n").length - (text.endsWith("\n") ? 1 : 0) : 0;
-      const base = { kind: "blob", meta, path: segs, size: obj.data.length, binary, lineCount };
+      const base = { kind: "blob", meta, path: segs, size: obj.data.length, binary, lineCount, oid: found.entry.oid, mode: found.entry.mode, ...pin };
       if (isImage && (binary || /\.svg$/i.test(name))) return ok({ ...base, image: true });
       if (binary) return ok(base);
       if (/\.(md|markdown)$/i.test(name)) return ok({ ...base, html: renderMarkdown(text, { repo, ref: h ?? meta.ref }) });
@@ -1125,6 +1213,66 @@ export class RepoCell extends DurableObject<Env> {
         committer: this.personJson(commit.committer),
         parents: commit.parents,
         deco: deco.get(oid) ?? [],
+        truncated,
+        files: files.map((f) => ({
+          path: f.path,
+          status: !f.o ? "added" : !f.n ? "deleted" : f.o.mode !== f.n.mode ? "mode" : "modified",
+          oldMode: f.o?.mode ?? null,
+          newMode: f.n?.mode ?? null,
+          kind: f.kind,
+          add: f.add,
+          del: f.del,
+          hunks: f.hunks,
+        })),
+      });
+    }
+
+    // /compare/<base>...<head> (GitHub's three-dot compare): ahead/behind counts,
+    // the commits on head that base lacks, and the diff from the merge base to head
+    if (path === "/compare" || path.startsWith("/compare/")) {
+      const meta = this.viewMeta(repo);
+      let spec = "";
+      try {
+        spec = path.slice("/compare".length).split("/").filter(Boolean).map((s) => decodeURIComponent(s)).join("/");
+      } catch {
+        return fail(400, "bad compare spec");
+      }
+      const dots = spec.indexOf("...");
+      const baseName = dots >= 0 ? spec.slice(0, dots) : meta.head;
+      const headName = dots >= 0 ? spec.slice(dots + 3) : spec;
+      const empty = { kind: "compare", meta, base: baseName, head: headName || null, ready: false };
+      if (!headName) return ok(empty);
+      const rb = await this.resolveRef(baseName || undefined);
+      const rh = await this.resolveRef(headName);
+      const cb = rb ? await this.peelToCommit(rb.oid) : null;
+      const ch = rh ? await this.peelToCommit(rh.oid) : null;
+      if (!cb) return fail(404, `no such branch, tag or commit: ${baseName}`, { kind: "compare", base: baseName, head: headName, ready: false, missing: "base" });
+      if (!ch) return fail(404, `no such branch, tag or commit: ${headName}`, { kind: "compare", base: baseName, head: headName, ready: false, missing: "head" });
+      const cap = MAX_LOG_SCAN;
+      const [ab, ah] = await Promise.all([this.ancestry(cb.oid, cap), this.ancestry(ch.oid, cap)]);
+      const mergeBase = ah.order.find((x) => ab.set.has(x.oid)) ?? null;
+      const aheadList = ah.order.filter((x) => !ab.set.has(x.oid));
+      const behindN = ab.order.filter((x) => !ah.set.has(x.oid)).length;
+      const fromTree = mergeBase ? mergeBase.commit.tree : cb.commit.tree;
+      const { files, truncated } = cb.oid === ch.oid ? { files: [], truncated: false } : await this.computeDiff(fromTree, ch.commit.tree);
+      const deco = await this.decoList();
+      return ok({
+        kind: "compare",
+        meta,
+        ready: true,
+        base: baseName,
+        head: headName,
+        baseOid: cb.oid,
+        headOid: ch.oid,
+        mergeBase: mergeBase?.oid ?? null,
+        /** false: no common history inside the walk bound (the diff is then base..head, two-dot) */
+        related: !!mergeBase,
+        ahead: aheadList.length,
+        behind: behindN,
+        /** a walk hit its bound: counts are lower bounds */
+        capped: ab.capped || ah.capped,
+        commits: aheadList.slice(0, 250).map((x) => ({ ...this.briefCommit(x.oid, x.commit), deco: deco.get(x.oid) ?? [] })),
+        moreCommits: aheadList.length > 250,
         truncated,
         files: files.map((f) => ({
           path: f.path,
@@ -2017,11 +2165,221 @@ ${langHtml}
     return res;
   }
 
-  /** Commit one file's new contents onto a branch (serialized with pushes). */
-  private editCommit(req: Request, repo: string): Promise<Response> {
-    const run = this.receiveChain.then(() => this.applyEdit(req, repo));
+  /** Run a repository write after every earlier push / web write (one at a time per repository). */
+  private serialized<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.receiveChain.then(fn);
     this.receiveChain = run.then(() => {}, () => {});
     return run;
+  }
+
+  /** Commit one file's new contents onto a branch (the server-rendered editor; serialized with pushes). */
+  private editCommit(req: Request, repo: string): Promise<Response> {
+    return this.serialized(() => this.applyEdit(req, repo));
+  }
+
+  /**
+   * The headers a ref change hands back to the Worker, exactly like a push:
+   * x-changed gates the registry upsert, x-commit-time is its sort key,
+   * x-ref-updates feeds onPush (GitHub sync).
+   */
+  private async changeHeaders(updates: AppliedUpdate[], extra: Record<string, string> = {}): Promise<Headers> {
+    const headers = new Headers({ "cache-control": "no-store", ...extra });
+    headers.set("x-changed", "1");
+    headers.set("x-commit-time", String((await latestCommitTime(this.store).catch(() => null)) ?? Date.now()));
+    headers.set("x-main-lang", await this.mainLang().catch(() => ""));
+    try { headers.set("x-store-bytes", JSON.stringify(this.storageBytes())); } catch { /* optional */ }
+    const encoded = encodeURIComponent(JSON.stringify(updates));
+    if (updates.length && encoded.length <= MAX_REF_UPDATES_HEADER) headers.set("x-ref-updates", encoded);
+    return headers;
+  }
+
+  /**
+   * One commit from a list of file changes onto a branch tip: the core behind
+   * every web write (editor, new file, upload, delete, rename/move). Must run
+   * inside serialized(). `base` is the tip the page was opened at; a branch that
+   * moved since is a 409, never a silent overwrite.
+   */
+  private async commitChanges(o: {
+    branch: string;
+    base: string;
+    message: string;
+    changes: Change[];
+    blobs: Map<string, Uint8Array>;
+  }): Promise<{ status: number; body: Record<string, unknown>; headers?: Headers }> {
+    const refName = `refs/heads/${o.branch}`;
+    if (badBranchName(o.branch)) return { status: 400, body: { error: `bad branch name: ${o.branch}` } };
+    const tip = this.store.getRef(refName);
+    if (!tip) return { status: 404, body: { error: `no such branch: ${o.branch}` } };
+    if (!isOid(o.base)) return { status: 400, body: { error: "bad base commit" } };
+    if (tip !== o.base) {
+      return { status: 409, body: { error: "the branch has new commits since this page was opened", code: "stale", tip } };
+    }
+    const head = await this.peelToCommit(tip);
+    if (!head || head.oid !== tip) return { status: 409, body: { error: "branch tip is not a commit", code: "stale", tip } };
+    let result: Awaited<ReturnType<typeof applyChanges>>;
+    try {
+      result = await applyChanges(head.commit.tree, o.changes, {
+        loadTree: async (oid) => {
+          const obj = await this.store.get(oid);
+          return obj?.type === "tree" ? obj.data : null;
+        },
+        hash: (type, data) => hashObject(type, data),
+      });
+    } catch (err) {
+      if (err instanceof EditError) return { status: err.status, body: { error: err.message, code: err.status === 422 ? "conflict" : err.status === 404 ? "missing" : "invalid" } };
+      throw err;
+    }
+    if (result.tree === head.commit.tree) return { status: 422, body: { error: "no changes to commit", code: "unchanged" } };
+    const name = this.env.EDIT_AUTHOR_NAME ?? "mio";
+    const email = this.env.EDIT_AUTHOR_EMAIL ?? "qiankuishe@gmail.com";
+    const tz = /^[+-]\d{4}$/.test(this.env.EDIT_TZ ?? "") ? this.env.EDIT_TZ! : "+0800";
+    const now = Math.floor(Date.now() / 1000);
+    const who = `${name} <${email}> ${now} ${tz}`;
+    const msg = o.message.replace(/\r\n?/g, "\n").trim();
+    const commitData = te.encode(`tree ${result.tree}\nparent ${tip}\nauthor ${who}\ncommitter ${who}\n\n${msg}\n`);
+    const commitOid = hashObject("commit", commitData);
+    this.ctx.storage.transactionSync(() => {
+      for (const [oid, data] of o.blobs) if (!this.store.has(oid)) this.store.put(oid, "blob", data);
+      for (const t of result.trees) if (!this.store.has(t.oid)) this.store.put(t.oid, "tree", t.data);
+      this.store.put(commitOid, "commit", commitData);
+      // compare-and-swap inside the transaction: nothing else runs between the check above and here
+      // (serialized), but re-check anyway so a future caller outside the chain cannot lose an update
+      if (this.store.getRef(refName) !== tip) throw new Error("branch moved during commit");
+      this.store.setRef(refName, commitOid);
+      this.store.invalidateReachable();
+      this.store.setMeta("last-push", String(Date.now()));
+    });
+    const headers = await this.changeHeaders([{ ref: refName, old: tip, new: commitOid }], { "content-type": "application/json" });
+    return { status: 200, body: { commit: commitOid, parent: tip, branch: o.branch, tree: result.tree, paths: result.touched }, headers };
+  }
+
+  /**
+   * POST /~write/commit (console only) — JSON:
+   *   { branch, base, message, changes: [
+   *       { op: "put", path, content, encoding?: "utf8" | "base64", overwrite? },
+   *       { op: "delete", path }, { op: "move", from, to } ] }
+   */
+  private async webCommit(req: Request): Promise<Response> {
+    const reply = (status: number, body: Record<string, unknown>, headers?: Headers) =>
+      new Response(JSON.stringify(body), { status, headers: headers ?? { "content-type": "application/json", "cache-control": "no-store" } });
+    if (overDeclaredLength(req, MAX_WEB_COMMIT_REQUEST)) return reply(413, { error: "request too large", code: "toolarge" });
+    let b: Record<string, unknown>;
+    try {
+      const raw = await req.text();
+      if (raw.length > MAX_WEB_COMMIT_REQUEST) return reply(413, { error: "request too large", code: "toolarge" });
+      b = JSON.parse(raw);
+    } catch {
+      return reply(400, { error: "bad JSON" });
+    }
+    const str = (v: unknown) => (typeof v === "string" ? v : "");
+    const branch = str(b.branch);
+    const base = str(b.base);
+    const message = str(b.message).trim();
+    if (!message) return reply(400, { error: "commit message required", code: "invalid" });
+    if (message.length > 5000) return reply(400, { error: "commit message too long", code: "invalid" });
+    if (!Array.isArray(b.changes) || !b.changes.length) return reply(400, { error: "nothing to commit", code: "invalid" });
+    if (b.changes.length > MAX_WEB_COMMIT_FILES) return reply(413, { error: `at most ${MAX_WEB_COMMIT_FILES} files per commit`, code: "toolarge" });
+    const blobs = new Map<string, Uint8Array>();
+    const changes: Change[] = [];
+    let total = 0;
+    for (const raw of b.changes as unknown[]) {
+      const c = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+      if (c.op === "put") {
+        let data: Uint8Array;
+        if (c.encoding === "base64") {
+          try {
+            const bin = atob(str(c.content));
+            data = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+          } catch {
+            return reply(400, { error: "bad base64 content", code: "invalid" });
+          }
+        } else data = te.encode(str(c.content));
+        total += data.length;
+        if (total > MAX_WEB_COMMIT_BYTES) return reply(413, { error: `at most ${MAX_WEB_COMMIT_BYTES / 1024 / 1024} MB per commit`, code: "toolarge" });
+        const oid = hashObject("blob", data);
+        blobs.set(oid, data);
+        changes.push({ op: "put", path: str(c.path), blob: oid, overwrite: c.overwrite === true });
+      } else if (c.op === "delete") changes.push({ op: "delete", path: str(c.path) });
+      else if (c.op === "move") changes.push({ op: "move", from: str(c.from), to: str(c.to) });
+      else return reply(400, { error: "unknown change", code: "invalid" });
+    }
+    const r = await this.commitChanges({ branch, base, message, changes, blobs });
+    return reply(r.status, r.body, r.headers);
+  }
+
+  /**
+   * POST /~write/refs (console only) — branch management:
+   *   { action: "create", name, from }   new branch at a commit (branch, tag or SHA)
+   *   { action: "delete", name, expect? } never the default branch nor main
+   *   { action: "default", name }        move HEAD (the default branch)
+   * The same policy functions as a push decide (src/policy.ts); main and the
+   * default branch are additionally never deletable from the web.
+   */
+  private async webRefs(req: Request, p: Principal): Promise<Response> {
+    const reply = (status: number, body: Record<string, unknown>, headers?: Headers) =>
+      new Response(JSON.stringify(body), { status, headers: headers ?? { "content-type": "application/json", "cache-control": "no-store" } });
+    let b: Record<string, unknown>;
+    try {
+      b = JSON.parse(await req.text());
+    } catch {
+      return reply(400, { error: "bad JSON" });
+    }
+    const name = typeof b.name === "string" ? b.name : "";
+    const bad = badBranchName(name);
+    if (bad) return reply(400, { error: bad, code: "invalid" });
+    const ref = `refs/heads/${name}`;
+    const head = this.store.head();
+    const ownerOf = (r: string) => this.store.refOwner(r);
+    const policy = (old: string, next: string) =>
+      prePushReasons(p, [{ ref, old, next }], { head, empty: this.store.refs().length === 0, ownerOf })[0];
+    const json = { "content-type": "application/json" };
+    if (b.action === "create") {
+      if (this.store.getRef(ref)) return reply(422, { error: `branch ${name} already exists`, code: "exists" });
+      // git cannot hold both refs/heads/a and refs/heads/a/b (directory/file conflict)
+      const clash = this.store.refs().find((r) => r.name.startsWith("refs/heads/") && (r.name.startsWith(`${ref}/`) || ref.startsWith(`${r.name}/`)));
+      if (clash) return reply(422, { error: `conflicts with the existing branch ${clash.name.slice(11)}`, code: "exists" });
+      const from = typeof b.from === "string" && b.from ? b.from : undefined;
+      const rr = await this.resolveRef(from);
+      const c = rr ? await this.peelToCommit(rr.oid) : null;
+      if (!c) return reply(404, { error: `no such commit: ${from ?? "HEAD"}`, code: "missing" });
+      const why = policy(POLICY_ZERO, c.oid);
+      if (why) return reply(403, { error: why, code: "policy" });
+      this.ctx.storage.transactionSync(() => {
+        this.store.setRef(ref, c.oid);
+        this.store.delRefOwner(ref);
+        this.store.invalidateReachable();
+      });
+      return reply(200, { created: name, commit: c.oid }, await this.changeHeaders([{ ref, old: POLICY_ZERO, new: c.oid }], json));
+    }
+    if (b.action === "delete") {
+      const tip = this.store.getRef(ref);
+      if (!tip) return reply(404, { error: `no such branch: ${name}`, code: "missing" });
+      if (ref === head) return reply(403, { error: "the default branch cannot be deleted; make another branch the default first", code: "default" });
+      if (ref === "refs/heads/main") return reply(403, { error: "protected branch: main cannot be deleted from the web", code: "protected" });
+      if (typeof b.expect === "string" && b.expect && b.expect !== tip) return reply(409, { error: "the branch moved since this page was opened", code: "stale", tip });
+      const why = policy(tip, POLICY_ZERO);
+      if (why) return reply(403, { error: why, code: "policy" });
+      this.ctx.storage.transactionSync(() => {
+        this.store.delRef(ref);
+        this.store.delRefOwner(ref);
+        this.store.invalidateReachable();
+      });
+      return reply(200, { deleted: name, commit: tip }, await this.changeHeaders([{ ref, old: tip, new: POLICY_ZERO }], json));
+    }
+    if (b.action === "default") {
+      const tip = this.store.getRef(ref);
+      if (!tip) return reply(404, { error: `no such branch: ${name}`, code: "missing" });
+      if (ref === head) return reply(200, { default: name, unchanged: true });
+      this.ctx.storage.transactionSync(() => {
+        this.store.setHead(ref);
+        this.store.invalidateReachable();
+      });
+      // not a ref move, but the sync workflow mirrors HEAD (GitHub's default branch) on its run:
+      // report the new default as an update so onPush dispatches one
+      return reply(200, { default: name, previous: head.replace(/^refs\/heads\//, "") }, await this.changeHeaders([{ ref, old: tip, new: tip }], json));
+    }
+    return reply(400, { error: "unknown action", code: "invalid" });
   }
 
   private async applyEdit(req: Request, repo: string): Promise<Response> {
@@ -2035,19 +2393,13 @@ ${langHtml}
     const base = await this.base(repo, "tree");
     const parts = filePath.split("/").filter(Boolean);
     if (!branch || !parts.length || !isOid(baseOid) || !message) return errorPage(base, "bad edit request", 400);
-    const refName = `refs/heads/${branch}`;
-    const tip = this.store.getRef(refName);
+    const tip = this.store.getRef(`refs/heads/${branch}`);
     if (!tip) return errorPage(base, `no such branch: ${branch}`, 404);
     const href = parts.map(encodeURIComponent).join("/");
     const back = `${r}/tree/${href}?h=${encodeURIComponent(branch)}`;
-    if (tip !== baseOid) {
-      return errorPage(base, "编辑期间分支已有新提交，请重新打开文件再改一次。", 409);
-    }
-    const commitObj = await this.store.get(tip);
-    if (!commitObj || commitObj.type !== "commit") return errorPage(base, "branch tip is not a commit", 409);
-    const commit = parseCommit(commitObj.data);
-
-    const orig = await this.lookupPath(commit.tree, parts);
+    if (tip !== baseOid) return errorPage(base, "编辑期间分支已有新提交，请重新打开文件再改一次。", 409);
+    const head = await this.peelToCommit(tip);
+    const orig = head ? await this.lookupPath(head.commit.tree, parts) : null;
     if (!orig || orig.kind !== "blob") return errorPage(base, `path not found: ${filePath}`, 404);
     const origObj = await this.store.get(orig.entry.oid);
     const origText = origObj ? td.decode(origObj.data) : "";
@@ -2055,57 +2407,20 @@ ${langHtml}
     if (!origText.includes("\r\n")) content = content.replace(/\r\n/g, "\n");
     const blob = te.encode(content);
     if (blob.length > MAX_EDIT_BYTES) return errorPage(base, "file too large", 413);
-
-    // build the new objects bottom-up, writing nothing until all are known
-    const pending: { oid: string; type: "blob" | "tree" | "commit"; data: Uint8Array }[] = [];
     const blobOid = hashObject("blob", blob);
     if (blobOid === orig.entry.oid) return new Response(null, { status: 204, headers: { "x-location": back } });
-    pending.push({ oid: blobOid, type: "blob", data: blob });
-    const rewrite = async (treeOid: string, depth: number): Promise<string | null> => {
-      const tobj = await this.store.get(treeOid);
-      if (!tobj || tobj.type !== "tree") return null;
-      const entries = parseTree(tobj.data);
-      const i = entries.findIndex((e) => e.name === parts[depth]);
-      if (i < 0) return null;
-      const e = entries[i];
-      if (depth === parts.length - 1) {
-        if (isTreeMode(e.mode) || isGitlinkMode(e.mode)) return null;
-        entries[i] = { ...e, oid: blobOid };
-      } else {
-        if (!isTreeMode(e.mode)) return null;
-        const sub = await rewrite(e.oid, depth + 1);
-        if (!sub) return null;
-        entries[i] = { ...e, oid: sub };
-      }
-      const data = encodeTree(entries);
-      const oid = hashObject("tree", data);
-      pending.push({ oid, type: "tree", data });
-      return oid;
-    };
-    const newTree = await rewrite(commit.tree, 0);
-    if (!newTree) return errorPage(base, `path not found: ${filePath}`, 404);
-    const name = this.env.EDIT_AUTHOR_NAME ?? "mio";
-    const email = this.env.EDIT_AUTHOR_EMAIL ?? "qiankuishe@gmail.com";
-    const tz = this.env.EDIT_TZ ?? "+0800";
-    const now = Math.floor(Date.now() / 1000);
-    const who = `${name} <${email}> ${now} ${tz}`;
-    const commitData = te.encode(`tree ${newTree}\nparent ${tip}\nauthor ${who}\ncommitter ${who}\n\n${message.replace(/\r\n/g, "\n")}\n`);
-    const newCommit = hashObject("commit", commitData);
-    pending.push({ oid: newCommit, type: "commit", data: commitData });
-
-    this.ctx.storage.transactionSync(() => {
-      for (const o of pending) if (!this.store.has(o.oid)) this.store.put(o.oid, o.type, o.data);
-      this.store.setRef(refName, newCommit);
-      this.store.invalidateReachable();
+    const res = await this.commitChanges({
+      branch,
+      base: baseOid,
+      message,
+      changes: [{ op: "put", path: parts.join("/"), blob: blobOid, overwrite: true }],
+      blobs: new Map([[blobOid, blob]]),
     });
-
+    if (res.status !== 200 || !res.headers) return errorPage(base, String(res.body.error ?? "edit failed"), res.status);
     // 204 + x-location, not a 303: the Worker's stub.fetch would follow a redirect
-    const headers = new Headers({ "x-location": back, "cache-control": "no-store" });
-    headers.set("x-changed", "1");
-    headers.set("x-commit-time", String(now * 1000));
-    headers.set("x-main-lang", await this.mainLang().catch(() => ""));
-    try { headers.set("x-store-bytes", JSON.stringify(this.storageBytes())); } catch { /* optional */ }
-    return new Response(null, { status: 204, headers });
+    res.headers.set("x-location", back);
+    res.headers.delete("content-type");
+    return new Response(null, { status: 204, headers: res.headers });
   }
 
   private async blamePage(repo: string, h: string | undefined, path: string[]): Promise<Response> {
@@ -2570,6 +2885,12 @@ function encodeTree(entries: TreeEntry[]): Uint8Array {
 }
 
 const MAX_EDIT_BYTES = 1024 * 1024;
+/** web commits (new file / upload / delete / rename): decoded bytes, files, and the JSON request (base64 inflates by 4/3) */
+const MAX_WEB_COMMIT_BYTES = 20 * 1024 * 1024;
+const MAX_WEB_COMMIT_FILES = 200;
+const MAX_WEB_COMMIT_REQUEST = 28 * 1024 * 1024;
+/** the "t" file finder lists at most this many paths */
+const MAX_FILE_LIST = 20000;
 
 function fmtSize(n: number): string {
   if (n < 1024) return `${n} B`;

@@ -57,9 +57,21 @@ export interface ConsoleDeps {
   repoJson: (r: RepoInfo, full: boolean) => Record<string, unknown>;
   storageJson: (repos: RepoInfo[], usage: { read: number; written: number } | null) => Record<string, unknown>;
   doUsage: (env: Env) => Promise<{ read: number; written: number } | null>;
+  /** isSpaSub plus the console-only form pages (new file, upload) */
+  isConsoleSpaSub: (sub: string) => boolean;
+  /** bookkeeping after a web write the cell applied (registry upsert + onPush), exactly as after a push */
+  afterWrite: (repo: string, res: Response, env: Env, ctx?: ExecutionContext) => Promise<void>;
 }
 
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/** JSON body cap of a web commit: 20 MB of files, base64 (4/3) plus JSON framing */
+const MAX_COMMIT_REQUEST = 28 * 1024 * 1024;
+
+/** a declared body longer than max (chunked bodies are capped again where they are read) */
+function overLength(req: Request, max: number): boolean {
+  const n = parseInt(req.headers.get("content-length") ?? "", 10);
+  return Number.isFinite(n) && n > max;
+}
 const LOCK = `<svg viewBox='0 0 256 256' aria-hidden='true'><rect x='40' y='88' width='176' height='128' rx='8' fill='none' stroke='currentColor' stroke-width='16'/><path d='M88 88V56a40 40 0 0 1 80 0v32' fill='none' stroke='currentColor' stroke-width='16' stroke-linecap='round'/></svg>`;
 
 const ROLE_LABEL: Record<Role, [string, string]> = {
@@ -498,7 +510,7 @@ export function createConsole(deps: ConsoleDeps) {
   }
 
   /** Forward a web-editor request to the repository cell, with the console's own form action + CSRF token. */
-  async function editor(req: Request, env: Env, repo: string, sub: string, csrf: string, session: string, passHash: string): Promise<Response> {
+  async function editor(req: Request, env: Env, repo: string, sub: string, csrf: string, session: string, passHash: string, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const doUrl = new URL(req.url);
     doUrl.pathname = sub;
@@ -518,14 +530,8 @@ export function createConsole(deps: ConsoleDeps) {
     const res = await env.REPO.getByName(repo).fetch(new Request(doUrl.toString(), { method: req.method, headers, body }));
     if (req.method === "POST" && res.headers.has("x-location")) {
       if (res.headers.get("x-changed") === "1") {
-        const idle = parseInt(res.headers.get("x-commit-time") ?? "", 10) || Date.now();
-        try {
-          const registry = env.REGISTRY.getByName("registry");
-          await registry.upsert(repo, idle, res.headers.get("x-main-lang") ?? undefined);
-        } catch {
-          // registry deferred; next push heals
-        }
-        deps.invalidate(repo);
+        await deps.afterWrite(repo, res, env, ctx);
+        deps.invalidate(repo, url.origin);
       }
       return redirect(res.headers.get("x-location")!);
     }
@@ -637,7 +643,7 @@ export function createConsole(deps: ConsoleDeps) {
     if (vw) {
       const name = decodeRepo(vw[1]);
       const rest = vw[2];
-      if (!name || deps.movedTab(rest) !== null || !deps.isSpaSub(rest)) return null;
+      if (!name || deps.movedTab(rest) !== null || !deps.isConsoleSpaSub(rest)) return null;
       if (!(await env.REGISTRY.getByName("registry").get(name))) return null;
       const v = await consoleView(req, env, name, rest, url.search);
       const key = `${CONSOLE}/api/r/${repoUrl(name)}/view${rest}${url.search}`;
@@ -653,7 +659,7 @@ export function createConsole(deps: ConsoleDeps) {
     return null;
   }
 
-  async function api(req: Request, env: Env, sub: string, url: URL, session: string | null, passHash: string | null): Promise<Response> {
+  async function api(req: Request, env: Env, sub: string, url: URL, session: string | null, passHash: string | null, ctx?: ExecutionContext): Promise<Response> {
     const registry = env.REGISTRY.getByName("registry");
     const isJson = (req.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json");
     const readBody = async (): Promise<Record<string, unknown>> => {
@@ -667,6 +673,10 @@ export function createConsole(deps: ConsoleDeps) {
     const str = (v: unknown) => (typeof v === "string" ? v : v == null ? "" : String(v));
     if (req.method !== "GET" && req.method !== "POST") return jsonRes({ error: "method not allowed" }, 405);
     if (req.method === "POST" && !isJson) return jsonRes({ error: "JSON body required" }, 415);
+    // web commits carry file contents (base64): cap the body before anything reads it
+    if (req.method === "POST" && /^\/api\/r\/[^/]+\/commit$/.test(sub) ? overLength(req, MAX_COMMIT_REQUEST) : req.method === "POST" && overLength(req, 64 * 1024)) {
+      return jsonRes({ error: t("The request is too large (at most 20 MB of files per commit).", "请求太大（每次提交的文件最多 20 MB）。"), code: "toolarge" }, 413);
+    }
 
     if (sub === "/api/session" && req.method === "GET") {
       if (!session || !passHash) return jsonRes({ signedIn: false });
@@ -747,6 +757,28 @@ export function createConsole(deps: ConsoleDeps) {
       return jsonRes({ ok: true, csrf: await csrfToken(env, h, v) }, 200, sessionCookie(v, kept), hintCookie());
     }
 
+    // ---- web writes and the file list (any repository, console session) ----
+    const rw = /^\/api\/r\/([^/]+)\/(commit|refs|files)$/.exec(sub);
+    if (rw) {
+      const name = decodeRepo(rw[1]);
+      if (!name) return jsonRes({ error: "bad repository name" }, 400);
+      if (!(await registry.get(name))) return jsonRes({ error: `no such repository: ${name}` }, 404);
+      const cellHeaders = { "content-type": "application/json", "x-repo": name, "x-host": url.host, "x-proto": url.protocol.replace(":", ""), "x-mio-role": "admin", "x-mio-token": "console" };
+      if (rw[2] === "files") {
+        if (req.method !== "GET") return jsonRes({ error: "method not allowed" }, 405);
+        const res = await env.REPO.getByName(name).fetch(new Request(`${url.origin}/api/files${url.search}`, { method: "GET", headers: { ...cellHeaders, "x-mio-role": "reader" } }));
+        return jsonRes(await res.json().catch(() => ({ error: `HTTP ${res.status}` })), res.status);
+      }
+      if (req.method !== "POST") return jsonRes({ error: "method not allowed" }, 405);
+      const res = await env.REPO.getByName(name).fetch(new Request(`${url.origin}/~write/${rw[2]}`, { method: "POST", headers: cellHeaders, body: await req.arrayBuffer() }));
+      const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      if (res.ok && res.headers.get("x-changed") === "1") {
+        await deps.afterWrite(name, res, env, ctx);
+        await deps.invalidate(name, url.origin);
+      }
+      return jsonRes(body, res.status);
+    }
+
     const view = /^\/api\/r\/([^/]+)\/view(\/.*)?$/.exec(sub);
     if (view && req.method === "GET") {
       const name = decodeRepo(view[1]);
@@ -813,8 +845,8 @@ export function createConsole(deps: ConsoleDeps) {
   }
 
   /** Entry point for every path under /~mio (and /~mio itself). */
-  async function handle(req: Request, env: Env): Promise<Response> {
-    let res = await route(req, env);
+  async function handle(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+    let res = await route(req, env, ctx);
     if ((res.headers.get("set-cookie") ?? "").includes("mg_signed=")) return res;
     const passHash = await adminPasswordHash(env);
     const session = await validSession(req, env, passHash);
@@ -836,7 +868,7 @@ export function createConsole(deps: ConsoleDeps) {
     return out;
   }
 
-  async function route(req: Request, env: Env): Promise<Response> {
+  async function route(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
     if (path === CONSOLE) return redirect(`${CONSOLE}/`);
@@ -857,7 +889,7 @@ export function createConsole(deps: ConsoleDeps) {
     const sub = path.slice(CONSOLE.length); // starts with "/"
 
     // ---- JSON API for the React frontend (/~mio/api/*) ----
-    if (sub.startsWith("/api/")) return api(req, env, sub, url, session, passHash);
+    if (sub.startsWith("/api/")) return api(req, env, sub, url, session, passHash, ctx);
 
     // ---- React frontend pages (after the same gates as the server pages) ----
     if (req.method === "GET" && deps.spaOn(env)) {
@@ -1069,8 +1101,8 @@ export function createConsole(deps: ConsoleDeps) {
       }
       if (!REPO_NAME.test(repo)) return text("bad repository name", 400);
       if (!(await registry.get(repo))) return text(`no such repository: ${repo}`, 404);
-      if (req.method === "GET" && ed[2] && ed[2] !== "/") return editor(req, env, repo, `/edit${ed[2]}`, csrf, session, passHash);
-      if (req.method === "POST" && !ed[2]) return editor(req, env, repo, "/edit", csrf, session, passHash);
+      if (req.method === "GET" && ed[2] && ed[2] !== "/") return editor(req, env, repo, `/edit${ed[2]}`, csrf, session, passHash, ctx);
+      if (req.method === "POST" && !ed[2]) return editor(req, env, repo, "/edit", csrf, session, passHash, ctx);
       return text("not found", 404);
     }
 

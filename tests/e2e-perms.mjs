@@ -9,7 +9,7 @@
 // Tiny repositories only (a handful of objects), so it stays far away from any
 // Durable Object row budget even if pointed at a real deployment.
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateKeyPairSync, createSign, createHmac, randomBytes, webcrypto } from "node:crypto";
@@ -491,6 +491,145 @@ try {
   check((await fetch(`${BASE}/~mio/api/repos/permtest/delete`, { method: "POST", headers: H({ ...basic(ADMIN_TOKEN), origin: BASE, "content-type": "application/json" }), body: '{"confirm":"permtest"}' })).status === 401, "admin git token cannot delete through the API");
   const tagv = await (await apiGet("/~mio/api/r/permtest/view/tag/?h=v1")).json();
   check(tagv.kind === "tag" && tagv.name === "v1" && tagv.commit?.subject === "admin rewrite", "tag view");
+
+  console.log("== web file operations (console API): new / upload / rename / delete, one commit each");
+  const wdir = join(tmp, "websrc");
+  git(tmp, "init", "-q", wdir);
+  writeFileSync(join(wdir, "README.md"), "# web\n");
+  git(wdir, "add", "-A");
+  git(wdir, "commit", "-qm", "init");
+  mkdirSync(join(wdir, "src"), { recursive: true });
+  commit(wdir, "src/a.txt", "a\n", "add a");
+  check(git(wdir, "push", "-q", url(ADMIN_TOKEN, "webfiles"), "main").code === 0, "admin creates webfiles");
+  git(wdir, "checkout", "-qb", "dev");
+  commit(wdir, "dev.txt", "d\n", "on dev");
+  check(git(wdir, "push", "-q", url(ADMIN_TOKEN, "webfiles"), "dev").code === 0, "admin pushes dev");
+  const wv = async () => (await (await apiGet("/~mio/api/r/webfiles/view/tree/?h=main")).json());
+  const v0 = await wv();
+  check(v0.kind === "tree" && v0.branch === "main" && /^[0-9a-f]{40}$/.test(v0.commit), "tree view carries the branch and its tip (commit base + permalink)");
+  const blobV = await (await apiGet("/~mio/api/r/webfiles/view/tree/src/a.txt")).json();
+  check(blobV.kind === "blob" && blobV.commit === v0.commit && blobV.branch === "main" && /^[0-9a-f]{40}$/.test(blobV.oid), "blob view: commit, branch, blob oid");
+  const shaV = await (await apiGet(`/~mio/api/r/webfiles/view/tree/src/a.txt?h=${v0.commit}`)).json();
+  check(shaV.kind === "blob" && shaV.branch === null && shaV.commit === v0.commit, "permalink view (?h=<sha>): no branch, same commit");
+  const newV = await (await apiGet("/~mio/api/r/webfiles/view/new/src?h=main")).json();
+  check(newV.kind === "tree" && newV.entries.some((e) => e.name === "a.txt"), "/new/<dir> view = that directory");
+  const wf_cm = (body, extra) => apiPost("/~mio/api/r/webfiles/commit", body, extra);
+  const put = (path, content, more = {}) => ({ op: "put", path, content, ...more });
+
+  // --- the gate: same rules as every other console write
+  const body0 = { branch: "main", base: v0.commit, message: "web: add notes", changes: [put("docs/notes.md", "# notes\n")] };
+  check((await fetch(`${BASE}/~mio/api/r/webfiles/commit`, { method: "POST", headers: H({ origin: BASE, "content-type": "application/json", "x-csrf-token": csrfJ }), body: JSON.stringify(body0) })).status === 401, "commit API without a session -> 401");
+  check([401, 403].includes((await fetch(`${BASE}/~mio/api/r/webfiles/commit`, { method: "POST", headers: { cookie, origin: BASE, "content-type": "application/json", "x-csrf-token": csrfJ }, body: JSON.stringify(body0) })).status), "commit API without the Access assertion -> 401/403");
+  const otherKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+  check((await wf_cm(body0, { "cf-access-jwt-assertion": jwt({}, otherKey) })).status === 403, "commit API with a forged Access assertion -> 403");
+  check((await wf_cm(body0, { "cf-access-jwt-assertion": jwt({ aud: ["other-app"] }) })).status === 403, "commit API with another Access application's assertion -> 403");
+  check((await wf_cm(body0, { "x-csrf-token": "" })).status === 403, "commit API without CSRF -> 403");
+  check((await wf_cm(body0, { "x-csrf-token": "nope" })).status === 403, "commit API with a wrong CSRF token -> 403");
+  check((await wf_cm(body0, { origin: "https://evil.example" })).status === 403, "cross-site commit POST -> 403");
+  check((await wf_cm(body0, { origin: "null", "sec-fetch-site": "cross-site" })).status === 403, "Origin: null cross-site commit POST -> 403");
+  check((await fetch(`${BASE}/~mio/api/r/webfiles/commit`, { method: "POST", headers: H({ cookie, origin: BASE, "content-type": "application/x-www-form-urlencoded", "x-csrf-token": csrfJ }), body: "branch=main" })).status === 415, "form-encoded commit POST (what a cross-site form can send) -> 415");
+  check((await fetch(`${BASE}/~mio/api/r/webfiles/commit`, { method: "POST", headers: H({ ...basic(W), origin: BASE, "content-type": "application/json" }), body: JSON.stringify(body0) })).status === 401, "writer token cannot use the commit API");
+  check((await fetch(`${BASE}/~mio/api/r/webfiles/commit`, { method: "POST", headers: H({ ...basic(ADMIN_TOKEN), origin: BASE, "content-type": "application/json" }), body: JSON.stringify(body0) })).status === 401, "admin git token cannot use the commit API either");
+  for (const p of ["/webfiles/~write/commit", "/webfiles/~write/refs", "/webfiles/%7Ewrite/commit"]) {
+    const rr = await fetch(`${BASE}${p}`, { method: "POST", headers: { ...basic(W), "content-type": "application/json", "x-mio-role": "admin", "x-mio-token": "console" }, body: JSON.stringify({ ...body0, branch: "main" }) });
+    check(rr.status === 404, `writer token + spoofed cell headers: POST ${p} -> 404`);
+  }
+  check((await fetch(`${BASE}/webfiles/~write/refs`, { method: "POST", headers: { ...basic(ADMIN_TOKEN), "content-type": "application/json" }, body: '{"action":"delete","name":"dev"}' })).status === 404, "admin git token cannot reach the cell's write door either");
+  check((await fetch(`${BASE}/webfiles/new/src?h=main`, { redirect: "manual" })).headers.get("location") === "/~mio/r/webfiles/new/src?h=main", "public /new/<dir> -> console form");
+  check((await (await wv()).commit) === v0.commit, "…and nothing was committed by any refused request");
+
+  // --- the operations
+  dispatches.length = 0;
+  const c1 = await wf_cm(body0);
+  const c1b = await c1.json();
+  check(c1.status === 200 && /^[0-9a-f]{40}$/.test(c1b.commit) && c1b.parent === v0.commit, "new file -> one commit on main");
+  const wd = await (async () => { for (let t = 0; t < 4000; t += 100) { const d = dispatches.find((x) => x.client_payload?.repo === "webfiles"); if (d) return d; await new Promise((r) => setTimeout(r, 100)); } return null; })();
+  check(wd?.client_payload?.refs?.[0]?.ref === "refs/heads/main" && wd.client_payload.refs[0].new === c1b.commit && wd.client_payload.refs[0].old === v0.commit, "web commit fires onPush like a push (repository_dispatch with the ref update)");
+  const lst = (await (await apiGet("/~mio/api/repos")).json()).repos.find((x) => x.name === "webfiles");
+  check(lst && Date.now() - lst.idle < 120000, "registry updated (list sort key = the web commit)");
+  const stale = await wf_cm({ ...body0, changes: [put("docs/other.md", "x")] });
+  const staleB = await stale.json();
+  check(stale.status === 409 && staleB.code === "stale" && staleB.tip === c1b.commit, "outdated base commit -> 409 (with the new tip)");
+  check((await wf_cm({ ...body0, base: c1b.commit })).status === 422, "creating an existing file -> 422");
+  for (const bad of ["../x", "docs/../x", ".git/config", "a//b", "/abs", "x\\y", ""]) check((await wf_cm({ ...body0, base: c1b.commit, changes: [put(bad, "x")] })).status === 400, `bad path ${JSON.stringify(bad)} -> 400`);
+  check((await wf_cm({ ...body0, base: c1b.commit, message: " " })).status === 400, "empty commit message -> 400");
+  check((await wf_cm({ ...body0, base: c1b.commit, branch: "nope" })).status === 404, "unknown branch -> 404");
+  const bin = Buffer.from([0, 1, 2, 255, 254, 10]).toString("base64");
+  const up = await wf_cm({ branch: "main", base: c1b.commit, message: "web: upload 2 files", changes: [put("assets/logo.bin", bin, { encoding: "base64", overwrite: true }), put("assets/readme.txt", Buffer.from("hi\n").toString("base64"), { encoding: "base64", overwrite: true })] });
+  const upb = await up.json();
+  check(up.status === 200 && upb.paths?.length === 2, "upload: 2 files in one commit");
+  const bres = await fetch(`${BASE}/~mio/r/webfiles/plain/assets/logo.bin`, { headers: H({ cookie }) });
+  check(Buffer.compare(Buffer.from(await bres.arrayBuffer()), Buffer.from([0, 1, 2, 255, 254, 10])) === 0, "uploaded binary bytes come back unchanged");
+  const big = "A".repeat(Math.ceil((20 * 1024 * 1024 + 4096) / 3) * 4);
+  const tooBig = await wf_cm({ branch: "main", base: upb.commit, message: "too big", changes: [put("big.bin", big, { encoding: "base64" })] });
+  check(tooBig.status === 413, "upload over 20 MB -> 413");
+  const mv = await wf_cm({ branch: "main", base: upb.commit, message: "web: move a.txt", changes: [{ op: "move", from: "src/a.txt", to: "lib/deep/a.txt" }] });
+  const mvb = await mv.json();
+  check(mv.status === 200, "rename / move across directories");
+  check((await wf_cm({ branch: "main", base: mvb.commit, message: "x", changes: [{ op: "move", from: "src/a.txt", to: "b.txt" }] })).status === 404, "moving a missing file -> 404");
+  const race = await Promise.all([1, 2].map((i) => wf_cm({ branch: "main", base: mvb.commit, message: `race ${i}`, changes: [put(`race${i}.txt`, "r")] })));
+  check(race.map((x) => x.status).sort().join() === "200,409", "two concurrent commits on the same base: one lands, the other gets 409 (writes are serialized)");
+  const raced = await race.find((x) => x.status === 200).json();
+  const rm = await wf_cm({ branch: "main", base: raced.commit, message: "web: drop race file", changes: [{ op: "delete", path: raced.paths[0] }] });
+  mvb.commit = (await rm.json()).commit;
+  const wf_del = await wf_cm({ branch: "main", base: mvb.commit, message: "web: delete notes", changes: [{ op: "delete", path: "docs/notes.md" }] });
+  const delb = await wf_del.json();
+  check(wf_del.status === 200, "delete");
+  const docsV = await apiGet("/~mio/api/r/webfiles/view/tree/docs?h=main");
+  const srcV = await apiGet("/~mio/api/r/webfiles/view/tree/src?h=main");
+  check(docsV.status === 404 && srcV.status === 404, "directories left empty are pruned (docs/, src/)");
+  const files = await (await fetch(`${BASE}/webfiles/api/files`)).json();
+  check(JSON.stringify(files.paths) === JSON.stringify(["README.md", "assets/logo.bin", "assets/readme.txt", "lib/deep/a.txt"]) && files.commit === delb.commit, "file list API (public) for the t finder");
+  check((await (await apiGet("/~mio/api/r/webfiles/files?h=dev")).json()).paths.includes("dev.txt"), "file list API (console) at another ref");
+
+  // the old server-rendered editor now goes through the same core (and fires onPush too)
+  dispatches.length = 0;
+  const ep2 = await consoleGet("/~mio/edit/webfiles/README.md?h=main");
+  const eh2 = await ep2.text();
+  const es2 = await consolePost("/~mio/edit/webfiles", { csrf: csrfOf(eh2), branch: "main", path: "README.md", base: /name='base' value='([0-9a-f]{40})'/.exec(eh2)?.[1], content: "# web\r\nedited\r\n", message: "web edit README" });
+  check(es2.status === 303, "editor commit (shared commit core)");
+  check(!!(await (async () => { for (let t = 0; t < 4000; t += 100) { if (dispatches.some((x) => x.client_payload?.repo === "webfiles")) return true; await new Promise((r) => setTimeout(r, 100)); } return false; })()), "editor commit fires onPush too");
+
+  console.log("== branch management (console API)");
+  const refsApi = (b, extra) => apiPost("/~mio/api/r/webfiles/refs", b, extra);
+  check((await refsApi({ action: "create", name: "feature/x", from: "main" }, { "x-csrf-token": "" })).status === 403, "branch API without CSRF -> 403");
+  check((await refsApi({ action: "create", name: "feature/x", from: "main" }, { origin: "https://evil.example" })).status === 403, "cross-site branch API -> 403");
+  check((await fetch(`${BASE}/~mio/api/r/webfiles/refs`, { method: "POST", headers: H({ ...basic(W), origin: BASE, "content-type": "application/json" }), body: '{"action":"delete","name":"dev"}' })).status === 401, "writer token cannot use the branch API");
+  const nb = await refsApi({ action: "create", name: "feature/x", from: "main" });
+  check(nb.status === 200 && (await nb.json()).commit, "create branch feature/x from main");
+  check((await refsApi({ action: "create", name: "feature/x", from: "main" })).status === 422, "existing branch -> 422");
+  check((await refsApi({ action: "create", name: "feature", from: "main" })).status === 422, "directory/file ref conflict -> 422");
+  check((await refsApi({ action: "create", name: "bad..name", from: "main" })).status === 400, "invalid branch name -> 400");
+  check((await refsApi({ action: "create", name: "y", from: "no-such-ref" })).status === 404, "unknown start point -> 404");
+  check((await refsApi({ action: "delete", name: "main" })).status === 403, "main cannot be deleted from the web");
+  const sd = await refsApi({ action: "default", name: "dev" });
+  check(sd.status === 200 && (await (await fetch(`${BASE}/webfiles/api/refs`)).json()).head === "refs/heads/dev", "default branch (HEAD) -> dev");
+  check((await refsApi({ action: "delete", name: "dev" })).status === 403, "the default branch cannot be deleted");
+  check((await refsApi({ action: "delete", name: "main" })).status === 403, "main stays protected even when it is not the default");
+  const wdc = join(tmp, "webw");
+  git(tmp, "clone", "-q", url(W, "webfiles"), wdc);
+  git(wdc, "checkout", "-q", "dev");
+  commit(wdc, "w.txt", "w\n", "writer on new default");
+  r = git(wdc, "push", url(W, "webfiles"), "dev");
+  check(r.code !== 0 && /protected branch/.test(r.out), "writer cannot push the new default branch (main protection follows HEAD)");
+  check((await refsApi({ action: "delete", name: "feature/x", expect: "0".repeat(40) })).status === 409, "delete with an outdated tip -> 409");
+  check((await refsApi({ action: "delete", name: "feature/x" })).status === 200, "delete a non-default branch");
+  check((await refsApi({ action: "default", name: "main" })).status === 200, "default back to main");
+  const cmpV = await (await fetch(`${BASE}/webfiles/api/view/compare/main...dev`)).json();
+  check(cmpV.kind === "compare" && cmpV.ready && cmpV.ahead === 1 && cmpV.behind === 7 && cmpV.commits?.[0]?.subject === "on dev" && cmpV.files?.some((f) => f.path === "dev.txt" && f.status === "added"), "compare main...dev: ahead 1, behind 7, commits + diff from the merge base");
+  const cmpMissing = await fetch(`${BASE}/webfiles/api/view/compare/main...nope`);
+  check(cmpMissing.status === 404 && (await cmpMissing.json()).missing === "head", "compare with an unknown ref -> 404 (says which side)");
+  const cmpShell = bootOf(await (await fetch(`${BASE}/webfiles/compare/main...dev`)).text());
+  check(cmpShell?.data["/webfiles/api/view/compare/main...dev"]?.body?.kind === "compare", "/<repo>/compare/a...b is a frontend page (data inlined)");
+
+  console.log("== web commits are real git history");
+  const wclone = join(tmp, "webclone");
+  check(git(tmp, "clone", "-q", url(ADMIN_TOKEN, "webfiles"), wclone).code === 0, "clone webfiles");
+  const wlog = git(wclone, "log", "--format=%s", "main").out;
+  check(["web: drop race file", "web: add notes", "web: upload 2 files", "web: move a.txt", "web: delete notes", "web edit README"].every((m) => wlog.includes(m)), "git log shows every web commit");
+  const fsck = git(wclone, "fsck", "--full", "--strict");
+  check(fsck.code === 0 && !/error|warning|broken/i.test(fsck.out), "git fsck --full --strict is clean");
+  check(git(wclone, "show", "main:README.md").out === "# web\nedited\n", "editor commit kept LF line endings");
 
   console.log("== revoke (API)");
   const list3 = (await (await apiGet("/~mio/api/tokens")).json()).tokens;

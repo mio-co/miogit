@@ -20,7 +20,13 @@ export function spaOn(env: Env): boolean {
 export function isSpaSub(sub: string): boolean {
   if (sub === "/" || sub === "") return true;
   if (sub === "/tree" || sub.startsWith("/tree/")) return true;
+  if (sub === "/compare" || sub.startsWith("/compare/")) return true;
   return ["/log", "/branches", "/tags", "/commit", "/tag"].some((p) => sub === p || sub === `${p}/`);
+}
+
+/** Console-only frontend pages on top of isSpaSub: the new-file and upload forms (/~mio/r/<repo>/new|upload/<dir>). */
+export function isConsoleSpaSub(sub: string): boolean {
+  return isSpaSub(sub) || /^\/(new|upload)(\/|$)/.test(sub);
 }
 
 export interface Boot {

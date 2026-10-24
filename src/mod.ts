@@ -22,7 +22,7 @@ import { roleAllows, type Principal } from "./policy";
 import { createConsole, CONSOLE } from "./admin";
 import { ICON_PENCIL, ICON_REPO, ICON_SIGN_IN, ICON_USER_CIRCLE } from "./ui/icons";
 import { handleSync, SYNC_PREFIX } from "./sync";
-import { spaOn, isSpaSub, spaShell, bootBase, repoJson, storageJson } from "./spa";
+import { spaOn, isSpaSub, isConsoleSpaSub, spaShell, bootBase, repoJson, storageJson } from "./spa";
 
 export { RepoCell } from "./repo";
 export { Registry } from "./registry";
@@ -653,6 +653,29 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
     storageJson,
     doUsage,
     invalidate: invalidateRepo,
+    isConsoleSpaSub,
+    afterWrite: async (repo, res, env, ctx) => {
+      // a web commit / branch change is bookkept exactly like a push (see the receive-pack branch below)
+      if (res.headers.get("x-changed") !== "1") return;
+      const idle = parseInt(res.headers.get("x-commit-time") ?? "", 10) || Date.now();
+      const registry = env.REGISTRY.getByName("registry");
+      try {
+        await registry.upsert(repo, idle, res.headers.get("x-main-lang") ?? undefined);
+        const sb = parseStoreBytes(res);
+        if (sb) await registry.setBytes(repo, sb);
+      } catch {
+        // registry deferred; next push heals
+      }
+      infoMemo.delete(repo);
+      if (options.onPush) {
+        const event: PushEvent = { repo, updates: parseRefUpdates(res), commitTime: idle, principal: { role: "admin", id: "console", name: "console" } };
+        const run = Promise.resolve(options.onPush(event as PushEvent, env as E)).catch((err) => {
+          console.log(`[onPush ${repo}] hook failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+        if (ctx) ctx.waitUntil(run);
+        else await run;
+      }
+    },
   });
   const inner = async (req: Request, env: E, ctx: ExecutionContext): Promise<Response> => {
       const url = new URL(req.url);
@@ -667,7 +690,7 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
         u.pathname = "/~" + path.slice(4);
         return new Response(null, { status: 301, headers: { location: u.toString() } });
       }
-      if (ui && (path === CONSOLE || path.startsWith(`${CONSOLE}/`))) return console_.handle(req, env);
+      if (ui && (path === CONSOLE || path.startsWith(`${CONSOLE}/`))) return console_.handle(req, env, ctx);
       // GitHub two-way sync: org webhook + the sync workflow's API (outside Access; each endpoint authenticates itself)
       if (path === SYNC_PREFIX || path.startsWith(`${SYNC_PREFIX}/`)) return handleSync(req, env, ctx, { invalidate: invalidateRepo });
       if (!ui && path.startsWith("/~")) return new Response("not found\n", { status: 404 });
@@ -788,6 +811,11 @@ export function createDurableGit<E extends Env = Env>(options: DurableGitOptions
       // old tabs merged into the new structure: about/summary -> Code, refs -> Branches (301, never 404)
       const moved = ui && req.method === "GET" ? movedTab(sub) : null;
       if (moved !== null) return new Response(null, { status: 301, headers: { location: `/${repoUrl(repo)}${moved}${moved.includes("?") ? "" : url.search}`, "cache-control": "no-cache" } });
+      // "/~…" sub-paths are the cell's console-only write doors (/~write/*): never
+      // reachable through a repository route, whatever the credentials
+      if (sub.startsWith("/~") || /^\/%7e/i.test(sub)) return new Response("not found\n", { status: 404 });
+      // the web file forms live in the console too (/~mio/r/<repo>/new|upload/<dir>)
+      if (ui && req.method === "GET" && /^\/(new|upload)(\/|$)/.test(sub)) return redirect(`${CONSOLE}/r/${repoUrl(repo)}${sub}${url.search}`);
       // the web editor moved into the console (/~mio/edit/<repo>/<path>)
       if (ui && (sub === "/edit" || sub.startsWith("/edit/"))) {
         if (req.method === "GET" && sub.startsWith("/edit/")) return redirect(`${CONSOLE}/edit/${repoUrl(repo)}${sub.slice(5)}${url.search}`);

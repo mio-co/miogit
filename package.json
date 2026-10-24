@@ -29,7 +29,7 @@
     "dev": "wrangler dev",
     "deploy": "npm run build:web && wrangler deploy",
     "typecheck": "tsc --noEmit && npm --prefix web run typecheck",
-    "test": "node --experimental-strip-types --test tests/policy.test.ts tests/sealed-box.test.ts && python3 -m unittest discover -s sync/github -p 'test_*.py'",
+    "test": "node --experimental-strip-types --test tests/policy.test.ts tests/sealed-box.test.ts tests/tree-edit.test.ts && python3 -m unittest discover -s sync/github -p 'test_*.py'",
     "test:e2e": "npm run build:web && node tests/e2e-perms.mjs",
     "build:web": "npm --prefix web run build",
     "test:smoke": "node web/scripts/smoke-render.mjs"
