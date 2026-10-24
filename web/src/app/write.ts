@@ -13,7 +13,7 @@ export interface CommitOk { commit: string; parent: string; branch: string; path
 export interface WriteErr { error?: string; code?: 'stale' | 'conflict' | 'missing' | 'invalid' | 'toolarge' | 'unchanged' | 'exists' | 'default' | 'protected' | 'policy'; tip?: string }
 
 /** the per-commit limits enforced by the cell (src/repo.ts) */
-export const MAX_COMMIT_BYTES = 20 * 1024 * 1024;
+export const MAX_COMMIT_BYTES = 10 * 1024 * 1024;
 export const MAX_COMMIT_FILES = 200;
 
 type T = (en: string, zh: string) => string;
@@ -56,7 +56,7 @@ export function writeError(r: Res<WriteErr>, t: T): string {
   const detail = b.error ? ` (${b.error})` : '';
   if (r.status === 0) return t('Network error. Nothing was committed; try again.', '网络错误，没有提交任何内容，请重试。');
   if (b.code === 'stale' || r.status === 409) return t('The branch has new commits since you opened this page. Reload to get them, then commit again — your edits are kept.', '打开页面后分支有了新提交。请先刷新到最新，再提交一次——你的修改会保留。');
-  if (b.code === 'toolarge' || r.status === 413) return t('Too large: at most 20 MB and 200 files per commit.', '太大了：每次提交最多 20 MB、200 个文件。');
+  if (b.code === 'toolarge' || r.status === 413) return t('Too large: at most 10 MB and 200 files per commit.', '太大了：每次提交最多 10 MB、200 个文件。');
   if (b.code === 'unchanged') return t('Nothing changed, so there is nothing to commit.', '没有任何改动，无需提交。');
   if (b.code === 'conflict' || b.code === 'exists') return t(`Conflicts with what is in the branch${detail}.`, `与分支里现有的内容冲突${detail}。`);
   if (b.code === 'missing' || r.status === 404) return t(`Not found${detail}.`, `没有找到${detail}。`);
@@ -82,7 +82,7 @@ export async function refsAction(repo: string, body: { action: 'create' | 'delet
   return r;
 }
 
-/** bytes -> base64 in chunks (a spread of a 20 MB array would overflow the stack) */
+/** bytes -> base64 in chunks (a spread of a 10 MB array would overflow the stack) */
 export function toBase64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf);
   let s = '';

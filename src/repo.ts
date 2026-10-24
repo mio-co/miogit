@@ -2886,9 +2886,9 @@ function encodeTree(entries: TreeEntry[]): Uint8Array {
 
 const MAX_EDIT_BYTES = 1024 * 1024;
 /** web commits (new file / upload / delete / rename): decoded bytes, files, and the JSON request (base64 inflates by 4/3) */
-const MAX_WEB_COMMIT_BYTES = 20 * 1024 * 1024;
+const MAX_WEB_COMMIT_BYTES = 10 * 1024 * 1024;
 const MAX_WEB_COMMIT_FILES = 200;
-const MAX_WEB_COMMIT_REQUEST = 28 * 1024 * 1024;
+const MAX_WEB_COMMIT_REQUEST = 14 * 1024 * 1024;
 /** the "t" file finder lists at most this many paths */
 const MAX_FILE_LIST = 20000;
 

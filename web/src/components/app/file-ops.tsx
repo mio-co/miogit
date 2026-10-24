@@ -446,7 +446,7 @@ export function UploadView({ v, c, h }: { v: Tree; c: RepoCtx; h?: string | null
             listVariant="rows"
             labels={{
               drop: t('Drag files or a folder here, or click to choose files', '把文件或文件夹拖到这里，或点击选择文件'),
-              hint: t('Up to 20 MB and 200 files per commit. Files with the same name are replaced.', '每次提交最多 20 MB、200 个文件。同名文件会被覆盖。'),
+              hint: t('Up to 10 MB and 200 files per commit. Files with the same name are replaced.', '每次提交最多 10 MB、200 个文件。同名文件会被覆盖。'),
               remove: t('Remove', '移除'),
               list: t('Files to commit', '待提交的文件'),
             }}
@@ -456,7 +456,7 @@ export function UploadView({ v, c, h }: { v: Tree; c: RepoCtx; h?: string | null
               <div className={cn('flex justify-between text-footnote tabular-nums', over ? 'text-danger' : 'text-text-secondary')}>
                 <span>{t(`${items.length} file${items.length === 1 ? '' : 's'}`, `${items.length} 个文件`)}</span>
                 <span>
-                  {fmtBytes(total)} / 20 MB
+                  {fmtBytes(total)} / 10 MB
                 </span>
               </div>
               <div
@@ -465,12 +465,12 @@ export function UploadView({ v, c, h }: { v: Tree; c: RepoCtx; h?: string | null
                 aria-valuemin={0}
                 aria-valuemax={MAX_COMMIT_BYTES}
                 aria-valuenow={Math.min(total, MAX_COMMIT_BYTES)}
-                aria-valuetext={`${fmtBytes(total)} / 20 MB`}
+                aria-valuetext={`${fmtBytes(total)} / 10 MB`}
                 className="h-1 overflow-hidden rounded-full bg-hairline-strong"
               >
                 <div className={cn('h-full origin-left rounded-full transition-transform duration-(--cds-dur-base) ease-swift', over ? 'bg-danger-fill' : 'bg-accent-brand')} style={{ transform: `scaleX(${ratio})` }} />
               </div>
-              {over && <ErrorText>{t('Too much for one commit: remove files until it is under 20 MB and 200 files.', '一次提交放不下：请移除部分文件，控制在 20 MB、200 个文件以内。')}</ErrorText>}
+              {over && <ErrorText>{t('Too much for one commit: remove files until it is under 10 MB and 200 files.', '一次提交放不下：请移除部分文件，控制在 10 MB、200 个文件以内。')}</ErrorText>}
             </div>
           )}
         </div>

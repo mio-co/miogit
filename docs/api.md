@@ -257,7 +257,7 @@ directories left empty are pruned. Writes are serialized with pushes.
 Answers `{ commit, parent, branch, tree, paths }`, or an error with a
 `code`: 409 `stale` (the branch moved; `tip` is the new one), 422
 `conflict` / `unchanged`, 404 `missing`, 400 `invalid`, 413 `toolarge`
-(20 MB decoded / 200 files per commit).
+(10 MB decoded / 200 files per commit).
 
 ### POST /~mio/api/r/\<repo\>/refs
 

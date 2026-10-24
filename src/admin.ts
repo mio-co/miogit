@@ -64,8 +64,8 @@ export interface ConsoleDeps {
 }
 
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-/** JSON body cap of a web commit: 20 MB of files, base64 (4/3) plus JSON framing */
-const MAX_COMMIT_REQUEST = 28 * 1024 * 1024;
+/** JSON body cap of a web commit: 10 MB of files, base64 (4/3) plus JSON framing */
+const MAX_COMMIT_REQUEST = 14 * 1024 * 1024;
 
 /** a declared body longer than max (chunked bodies are capped again where they are read) */
 function overLength(req: Request, max: number): boolean {
@@ -675,7 +675,7 @@ export function createConsole(deps: ConsoleDeps) {
     if (req.method === "POST" && !isJson) return jsonRes({ error: "JSON body required" }, 415);
     // web commits carry file contents (base64): cap the body before anything reads it
     if (req.method === "POST" && /^\/api\/r\/[^/]+\/commit$/.test(sub) ? overLength(req, MAX_COMMIT_REQUEST) : req.method === "POST" && overLength(req, 64 * 1024)) {
-      return jsonRes({ error: t("The request is too large (at most 20 MB of files per commit).", "请求太大（每次提交的文件最多 20 MB）。"), code: "toolarge" }, 413);
+      return jsonRes({ error: t("The request is too large (at most 10 MB of files per commit).", "请求太大（每次提交的文件最多 10 MB）。"), code: "toolarge" }, 413);
     }
 
     if (sub === "/api/session" && req.method === "GET") {

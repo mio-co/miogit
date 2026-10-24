@@ -560,9 +560,9 @@ try {
   check(up.status === 200 && upb.paths?.length === 2, "upload: 2 files in one commit");
   const bres = await fetch(`${BASE}/~mio/r/webfiles/plain/assets/logo.bin`, { headers: H({ cookie }) });
   check(Buffer.compare(Buffer.from(await bres.arrayBuffer()), Buffer.from([0, 1, 2, 255, 254, 10])) === 0, "uploaded binary bytes come back unchanged");
-  const big = "A".repeat(Math.ceil((20 * 1024 * 1024 + 4096) / 3) * 4);
+  const big = "A".repeat(Math.ceil((10 * 1024 * 1024 + 4096) / 3) * 4);
   const tooBig = await wf_cm({ branch: "main", base: upb.commit, message: "too big", changes: [put("big.bin", big, { encoding: "base64" })] });
-  check(tooBig.status === 413, "upload over 20 MB -> 413");
+  check(tooBig.status === 413, "upload over 10 MB -> 413");
   const mv = await wf_cm({ branch: "main", base: upb.commit, message: "web: move a.txt", changes: [{ op: "move", from: "src/a.txt", to: "lib/deep/a.txt" }] });
   const mvb = await mv.json();
   check(mv.status === 200, "rename / move across directories");
